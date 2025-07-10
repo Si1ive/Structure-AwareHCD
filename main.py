@@ -189,11 +189,11 @@ if __name__ == '__main__':
     args = get_args_parser()
     set_seed(seed = args.seed)
     results = []  # 保存训练结果
-    max_search = 6
+    max_search = 3
     args.dataset = 'Farmland'  # Yellow River  Bay_Area  China USA
     for i in range(0, max_search):
         args, searched_params = grid_search(args, i)
-        args.flag_test = 'test'
+        args.flag_test = 'train'
         i += 1
         print(f'Start {i}-th random search')
         print(searched_params)
