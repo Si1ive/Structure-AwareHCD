@@ -1,0 +1,3 @@
+# ninja log v5
+1	35600	1752222824601797988	/home/zzh/code/Structure-AwareHCD/kernels/dwconv2d/build/temp.linux-x86_64-cpython-310/dwconv2d.o	18b10c0191959b7
+0	215466	1752223004413799574	/home/zzh/code/Structure-AwareHCD/kernels/dwconv2d/build/temp.linux-x86_64-cpython-310/depthwise_fwd/launch.o	9833987a40c2bd5

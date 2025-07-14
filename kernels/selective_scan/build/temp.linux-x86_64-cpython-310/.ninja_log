@@ -1,0 +1,4 @@
+# ninja log v5
+1	54093	1752220417909798937	/home/zzh/code/Structure-AwareHCD/kernels/selective_scan/build/temp.linux-x86_64-cpython-310/csrc/selective_scan/cusoflexrh/selective_scan_core_fwd.o	b2baa5d6a9b83109
+2	70990	1752220435061799437	/home/zzh/code/Structure-AwareHCD/kernels/selective_scan/build/temp.linux-x86_64-cpython-310/csrc/selective_scan/cusoflexrh/selective_scan_oflex_rh.o	f6b0a67eb35c9a53
+0	137125	1752220501093802666	/home/zzh/code/Structure-AwareHCD/kernels/selective_scan/build/temp.linux-x86_64-cpython-310/csrc/selective_scan/cusoflexrh/selective_scan_core_bwd.o	754e206a08f4f591

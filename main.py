@@ -36,6 +36,7 @@ def main(args, search_num):
     # -------------------------------------------------------------------------------
     # create model
     model = ViT(
+        backbone = args.backbone,
         patch_size = args.patches,
         num_feats = 1 * 4,
         band_size = args.band_size,
@@ -152,6 +153,7 @@ def get_args_parser():
     parser.add_argument('--gamma', type = float, default = 0.9, help = 'gamma')
     parser.add_argument('--weight_decay', type = float, default = 0, help = 'weight_decay')
 
+    parser.add_argument('--backbone', default = 'mamba', help = 'backbone of network')
     parser.add_argument('--ratio', type = float, default = 0.05, help = 'train ratio')
     parser.add_argument('--num_workers', default = 0, type = int)
     parser.add_argument('--band_size', default = 154, type = int)
