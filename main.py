@@ -10,8 +10,9 @@ import numpy as np
 from sklearn.model_selection import ParameterGrid
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
+from comparison_models.sst.sstvit import SSTViT
 from utils import set_seed, make_data, MyDataset, split_train_val, output_metric, \
     train_epoch, valid_epoch, test_epoch
 from vit_pytorch import ViT
@@ -35,19 +36,39 @@ def main(args, search_num):
     print(f"[Info]: Finish loading data!", flush = True)
     # -------------------------------------------------------------------------------
     # create model
-    model = ViT(
-        backbone = args.backbone,
-        patch_size = args.patches,
-        num_feats = 1 * 4,
-        band_size = args.band_size,
-        num_classes = args.num_classes,
-        dim = args.dim,
-        depth = args.depth,
-        heads = args.head,
-        mlp_dim = 8,
-        dropout = 0.1,
-        emb_dropout = 0.1,
-    )
+    if args.network =='sahcd':
+        model = ViT(
+            backbone = args.backbone,
+            patch_size = args.patches,
+            num_feats = 1 * 4,
+            band_size = args.band_size,
+            num_classes = args.num_classes,
+            dim = args.dim,
+            depth = args.depth,
+            heads = args.head,
+            mlp_dim = 8,
+            dropout = 0.1,
+            emb_dropout = 0.1,
+        )
+    elif args.network =='sst':
+        model = SSTViT(
+            image_size=args.patches,
+            near_band=1,
+            num_patches=args.band_size,
+            num_classes=2,
+            dim=32,
+            depth=2,
+            heads=4,
+            dim_head=16,
+            mlp_dim=8,
+            b_dim=512,
+            b_depth=3,
+            b_heads=8,
+            b_dim_head=32,
+            b_mlp_head=8,
+            dropout=0.2,
+            emb_dropout=0.1,
+        )
     model = model.to(device)
     # criterion
     criterion = nn.CrossEntropyLoss().cuda()
@@ -56,7 +77,7 @@ def main(args, search_num):
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = args.epoches // 10, gamma = args.gamma)
     # -------------------------------------------------------------------------------
     if args.flag_test == 'test':
-        model.load_state_dict(torch.load(f'./output/{search_num}_model_parameter.pkl'))
+        model.load_state_dict(torch.load(f'./output/{args.network}_{args.dataset}_round{search_num}_bestparameter.pth'))
         model.eval()
         # tar_v, pre_v = valid_epoch(model, val_loader, criterion, device)
         # OA2, AA_mean2, Kappa2, AA2 = output_metric(tar_v, pre_v)
@@ -78,9 +99,9 @@ def main(args, search_num):
         prediction_matrix = np.reshape(pre_u, (height, width))
         plt.imshow(prediction_matrix, 'gray')
         plt.axis('off')
-        plt.savefig(f'{args.out_dir}/{search_num}-{args.dataset}-result.jpg', bbox_inches = 'tight', pad_inches = -0.1)
+        plt.savefig(f'{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_result.jpg', bbox_inches = 'tight', pad_inches = -0.1)
         plt.show()
-        sio.savemat(f'{args.out_dir}/{search_num}-{args.dataset}-result.mat', {'CM': prediction_matrix})
+        sio.savemat(f'{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_result.mat', {'CM': prediction_matrix})
 
         print("Final result:")
         print("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(OA2, AA_mean2, Kappa2))
@@ -119,9 +140,10 @@ def main(args, search_num):
             if (epoch + 1) % args.save_epoch == 0 and best_state_dict is not None:
                 if not os.path.exists(args.out_dir):
                     os.mkdir(args.out_dir)
-                save_path = f"{args.out_dir}/{search_num}_model_parameter.pkl"
+                save_path = f"{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_bestparameter.pth"
                 torch.save(best_state_dict, save_path)
                 print('best model saved: {:.4f}'.format(best))
+
 
         print("Running Time: {:.2f}".format(total_time))
         print("**************************************************")
@@ -141,7 +163,8 @@ def print_args(args):
 
 def get_args_parser():
     parser = argparse.ArgumentParser("HSI")
-    parser.add_argument('--dataset', choices = ['China', 'USA'], default = 'China', help = 'dataset to use')
+    parser.add_argument('--network', choices=['sahcd', 'sst'], default='sahcd', help='dataset to use')
+    parser.add_argument('--dataset', choices = ['China', 'USA','Farmland'], default = 'Farmland', help = 'dataset to use')
     parser.add_argument('--flag_test', choices = ['test', 'train'], default = 'train', help = 'testing mark')
     parser.add_argument('--device', default = 'cuda:0', help = 'device')
     parser.add_argument('--seed', type = int, default = 0, help = 'number of seed')
@@ -162,6 +185,7 @@ def get_args_parser():
     parser.add_argument('--head', default = 4, type = int, help = 'number of transformer head')
     parser.add_argument('--dim', type = int, default = 128, help = 'feature dimension')
     parser.add_argument('--out_dir', default = './output', help = 'path where to save')
+    parser.add_argument('--logout_dir', default='./log_output', help='path where to save')
     parser.add_argument('--save_epoch', type = int, default = 50, help = 'epoch number to save model')
     args = parser.parse_args()
 
@@ -192,10 +216,8 @@ if __name__ == '__main__':
     set_seed(seed = args.seed)
     results = []  # 保存训练结果
     max_search = 3
-    args.dataset = 'Farmland'  # Yellow River  Bay_Area  China USA
     for i in range(0, max_search):
         args, searched_params = grid_search(args, i)
-        args.flag_test = 'train'
         i += 1
         print(f'Start {i}-th random search')
         print(searched_params)
@@ -207,7 +229,7 @@ if __name__ == '__main__':
         values.append(Kappa)
         results.append(values)
 
-        np.savetxt(f'{args.dataset}-{args.flag_test}.txt', np.array(results),
+        np.savetxt(f'{args.logout_dir}/{args.network}_{args.dataset}_{args.flag_test}.txt', np.array(results),
                    fmt = "%i, %i, %i, %.2f, %i, %i, %.6f, %.6f, %.6f")  # %.2f,
 
         print_args(vars(args))

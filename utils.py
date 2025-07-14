@@ -26,7 +26,6 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-
 # 边界拓展：镜像
 def mirror_hsi(height, width, band, input_normalize, patch = 5):
     padding = patch // 2
