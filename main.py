@@ -12,17 +12,19 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from backbone import SAHCD
+from comparison_models.mfcen.vit_pytorch import ViT
+
 from comparison_models.sst.sstvit import SSTViT
 from utils import set_seed, make_data, MyDataset, split_train_val, output_metric, \
     train_epoch, valid_epoch, test_epoch
-from vit_pytorch import ViT
 
 
 def main(args, search_num):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"[Info]: Use {device} now!")
 
-    all_x, all_y, labeled_index = make_data(args.dataset, patch_size = args.patches)
+    all_x, all_y, labeled_index = make_data(args, patch_size = args.patches)
     # 创建训练数据集 & 验证数据集
     labeled_x, labeled_y = all_x[labeled_index].squeeze(), all_y[labeled_index].squeeze()
     train_x_set, train_y_set, val_x_set, val_y_set = split_train_val(labeled_x, labeled_y, args)
@@ -37,6 +39,10 @@ def main(args, search_num):
     # -------------------------------------------------------------------------------
     # create model
     if args.network =='sahcd':
+        model = SAHCD(
+            dims=[args.data_shape[0],128,128,128]
+        )
+    elif args.network =='mfcen':
         model = ViT(
             backbone = args.backbone,
             patch_size = args.patches,
@@ -89,7 +95,7 @@ def main(args, search_num):
         height, width = img_size[args.dataset]
         # output classification maps
         tic = time.time()
-        pre_u = test_epoch(model, all_loader, device)
+        pre_u = test_epoch(args.network,model, all_loader, device)
         toc = time.time()
         print("Inference Time: {:.2f}".format(toc - tic))
 
@@ -118,7 +124,7 @@ def main(args, search_num):
             # train model
             model.train()
             tic = time.time()
-            train_acc, train_obj, tar_t, pre_t = train_epoch(model, train_loader, criterion, optimizer, device)
+            train_acc, train_obj, tar_t, pre_t = train_epoch(args.network, model, train_loader, criterion, optimizer, device)
             scheduler.step()
             toc = time.time()
             total_time += (toc - tic)
@@ -129,7 +135,7 @@ def main(args, search_num):
             # 验证集
             if (epoch + 1) % args.test_freq == 0:
                 model.eval()
-                tar_v, pre_v = valid_epoch(model, val_loader, criterion, device)
+                tar_v, pre_v = valid_epoch(args.network, model, val_loader, criterion, device)
                 OA2, AA_mean2, Kappa2, AA2 = output_metric(tar_v, pre_v)
                 if OA2 > best:
                     best = OA2
@@ -163,7 +169,7 @@ def print_args(args):
 
 def get_args_parser():
     parser = argparse.ArgumentParser("HSI")
-    parser.add_argument('--network', choices=['sahcd', 'sst'], default='sahcd', help='dataset to use')
+    parser.add_argument('--network', choices=['sahcd', 'sst', 'globalmind'], default='sahcd', help='dataset to use')
     parser.add_argument('--dataset', choices = ['China', 'USA','Farmland'], default = 'Farmland', help = 'dataset to use')
     parser.add_argument('--flag_test', choices = ['test', 'train'], default = 'train', help = 'testing mark')
     parser.add_argument('--device', default = 'cuda:0', help = 'device')
@@ -233,3 +239,4 @@ if __name__ == '__main__':
                    fmt = "%i, %i, %i, %.2f, %i, %i, %.6f, %.6f, %.6f")  # %.2f,
 
         print_args(vars(args))
+

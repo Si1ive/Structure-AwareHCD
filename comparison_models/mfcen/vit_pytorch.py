@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, repeat
-from backbone import Backbone, BandWiseFusion
+
+from comparison_models.mfcen.cnn_backbone import Backbone
 
 
 class Residual(nn.Module):
@@ -167,12 +168,15 @@ class ScaleFeatFuse(nn.Module):
 
 
 class ViT(nn.Module):
-    def __init__(self,backbone, patch_size, num_feats, band_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls',
+    def __init__(self, patch_size, num_feats, band_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls',
                  channels = 1, dim_head = 16, dropout = 0., emb_dropout = 0., mode = 'ViT'):
         super().__init__()
 
         self.pos_embedding = nn.Parameter(torch.randn(1, num_feats + 1, dim))
-        self.cnn_backbone = Backbone(backbone,patch_size, band_size = band_size, dim = dim)  # Siamese network
+        self.cnn_backbone = Backbone(patch_size, band_size = band_size, dim = dim)  # Siamese network
+        self.cnn_backbone1 = Backbone(patch_size, band_size = band_size, dim = dim)  # Siamese network
+        self.scale_fuse = ScaleFeatFuse(dim, heads, dim_head, dropout)
+
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
 
         self.dropout = nn.Dropout(emb_dropout)

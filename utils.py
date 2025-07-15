@@ -67,7 +67,7 @@ def get_patches(data, img_height, img_width, channel, patch_size):
     return patches
 
 
-def make_data(dataset: str, patch_size = 5, n_class = 2):
+def make_data(args, patch_size = 5, n_class = 2):
     """读取数据——>将数据整理为B×b×N格式——>标准化——>"""
     global path, data_t1, data_t2, y
     if platform.system().lower() == 'windows':
@@ -76,7 +76,7 @@ def make_data(dataset: str, patch_size = 5, n_class = 2):
     elif platform.system().lower() == 'linux':
         print("[Info]: Use Linux!")
         path = '/home/zzh/remote_data'
-    if dataset == 'China':
+    if args.dataset == 'China':
         data = sio.loadmat(path + '/DataSet/China&USA/China_Change_Dataset.mat')  # data set X
         data_t1 = data['T1']
         data_t2 = data['T2']
@@ -84,7 +84,7 @@ def make_data(dataset: str, patch_size = 5, n_class = 2):
             y = 1.0 * data['Binary']
         else:  # multiple
             y = sio.loadmat(path + '/DataSet/China&USA/China_multiple_gt.mat')['Multiple']
-    elif dataset == 'USA':
+    elif args.dataset == 'USA':
         data = sio.loadmat(path + '/DataSet/China&USA/USA_Change_Dataset.mat')  # data set X
         data_t1 = data['T1']
         data_t2 = data['T2']
@@ -92,19 +92,24 @@ def make_data(dataset: str, patch_size = 5, n_class = 2):
             y = 1.0 * data['Binary']
         else:  # multiple
             y = sio.loadmat(path + '/DataSet/China&USA/USA_multiple_gt.mat')['Multiple']
-    elif dataset == 'Yellow River':
+    elif args.dataset == 'Yellow River':
+        args.data_shape = [198, 463, 241]
+        args.data_split_num = 1
         data_t1 = sio.loadmat(path + '/DataSet/Yellow River/river_before.mat')['river_before']  # data set X
         data_t2 = sio.loadmat(path + '/DataSet/Yellow River/river_after.mat')['river_after']  # data set X
         y = sio.loadmat(path + '/DataSet/Yellow River/groundtruth.mat')['lakelabel_v1'] / 255  # the binary ground truth
-    elif dataset == 'Bay_Area':
+    elif args.dataset == 'Bay_Area':
+        args.data_shape = [224, 600, 500]
         data_t1 = sio.loadmat(path + '/DataSet/three_data/bayArea/Bay_Area_2013.mat')['HypeRvieW']
         data_t2 = sio.loadmat(path + '/DataSet/three_data/bayArea/Bay_Area_2015.mat')['HypeRvieW']
         y = sio.loadmat(path + '/DataSet/three_data/bayArea/bayArea_gtChanges.mat')['HypeRvieW']
-    elif dataset == 'Barbara':
+    elif args.dataset == 'Barbara':
+        args.data_shape = [224, 984, 740]
         data_t1 = sio.loadmat(path + '/DataSet/three_data/santaBarbara/barbara_2013_170.mat')['HypeRvieW']
         data_t2 = sio.loadmat(path + '/DataSet/three_data/santaBarbara/barbara_2014_170.mat')['HypeRvieW']
         y = sio.loadmat(path + '/DataSet/three_data/santaBarbara/barbara_gtChanges.mat')['HypeRvieW']
-    elif dataset == 'Farmland':
+    elif args.dataset == 'Farmland':
+        args.data_shape = [154, 450, 140]
         data_t1 = sio.loadmat(path + '/Farmland/T1.mat')['T1']
         data_t2 = sio.loadmat(path + '/Farmland/T2.mat')['T2']
         y = sio.loadmat(path + '/Farmland/GT.mat')['GT']
@@ -127,7 +132,7 @@ def make_data(dataset: str, patch_size = 5, n_class = 2):
     patches_t2 = get_patches(mirror_t2, img_height, img_width, channel, patch_size).astype(np.float16)
 
     y = np.reshape(y, (-1,))
-    if dataset in ['Bay_Area', 'Barbara']:
+    if args.dataset in ['Bay_Area', 'Barbara']:
         labeled = np.argwhere(y != 0)  # 0-black:unlabeled, 1-gray:changed, 2-white:unchanged
         y = 2 - y  # 替换label
     else:
@@ -265,7 +270,7 @@ def output_metric(tar, pre):
 
 # -------------------------------------------------------------------------------
 # validate model
-def valid_epoch(model, valid_loader, criterion, device):
+def valid_epoch(network, model, valid_loader, criterion, device):
     objs = AvgrageMeter()
     top1 = AvgrageMeter()
     tar = np.array([])
@@ -274,9 +279,12 @@ def valid_epoch(model, valid_loader, criterion, device):
         batch_data = batch_data.to(device)
         batch_target = batch_target.to(device)
 
-        batch_pred = model(batch_data)
-
-        loss = criterion(batch_pred, batch_target)
+        if network == 'sahcd':
+            batch_pred,_ = model(batch_data)
+            loss = criterion(batch_pred, batch_target)
+        else:
+            batch_pred = model(batch_data)
+            loss = criterion(batch_pred, batch_target)
 
         prec1, t, p = accuracy(batch_pred, batch_target, topk = (1,))
         n = batch_data.shape[0]
@@ -288,7 +296,7 @@ def valid_epoch(model, valid_loader, criterion, device):
     return tar, pre
 
 
-def test_epoch(model, test_loader, device):
+def test_epoch(network, model, test_loader, device):
     objs = AvgrageMeter()
     top1 = AvgrageMeter()
     tar = np.array([])
@@ -297,7 +305,7 @@ def test_epoch(model, test_loader, device):
         batch_data = batch_data.to(device)
         batch_target = batch_target.to(device)
 
-        batch_pred = model(batch_data)
+        batch_pred,_ = model(batch_data)
 
         _, pred = batch_pred.topk(1, 1, True, True)
         pp = pred.squeeze()
@@ -307,7 +315,7 @@ def test_epoch(model, test_loader, device):
 
 # -------------------------------------------------------------------------------
 # train model
-def train_epoch(model, train_loader, criterion, optimizer, device):
+def train_epoch(network, model, train_loader, criterion, optimizer, device):
     objs = AvgrageMeter()
     top1 = AvgrageMeter()
     tar = np.array([])
@@ -315,10 +323,17 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
     for batch_idx, (batch_data, batch_target) in enumerate(train_loader):
         batch_data = batch_data.to(device)
         batch_target = batch_target.to(device)
-
         optimizer.zero_grad()
-        batch_pred = model(batch_data)
-        loss = criterion(batch_pred, batch_target)
+
+        if network == 'sahcd':
+            batch_pred1,batch_pred2 = model(batch_data)
+            loss1 = criterion(batch_pred1, batch_target)
+            loss2 = criterion(batch_pred2, batch_target)
+            loss = (loss1 + loss2) /2
+        else:
+            batch_pred = model(batch_data)
+            loss = criterion(batch_pred, batch_target)
+
         loss.backward()
         optimizer.step()
 
