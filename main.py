@@ -42,39 +42,6 @@ def main(args, search_num):
         model = SAHCD(
             dims=[args.data_shape[0],128,128,128]
         )
-    elif args.network =='mfcen':
-        model = ViT(
-            backbone = args.backbone,
-            patch_size = args.patches,
-            num_feats = 1 * 4,
-            band_size = args.band_size,
-            num_classes = args.num_classes,
-            dim = args.dim,
-            depth = args.depth,
-            heads = args.head,
-            mlp_dim = 8,
-            dropout = 0.1,
-            emb_dropout = 0.1,
-        )
-    elif args.network =='sst':
-        model = SSTViT(
-            image_size=args.patches,
-            near_band=1,
-            num_patches=args.band_size,
-            num_classes=2,
-            dim=32,
-            depth=2,
-            heads=4,
-            dim_head=16,
-            mlp_dim=8,
-            b_dim=512,
-            b_depth=3,
-            b_heads=8,
-            b_dim_head=32,
-            b_mlp_head=8,
-            dropout=0.2,
-            emb_dropout=0.1,
-        )
     model = model.to(device)
     # criterion
     criterion = nn.CrossEntropyLoss().cuda()
@@ -175,7 +142,7 @@ def get_args_parser():
     parser.add_argument('--device', default = 'cuda:0', help = 'device')
     parser.add_argument('--seed', type = int, default = 0, help = 'number of seed')
     parser.add_argument('--batch_size', type = int, default = 64, help = 'number of batch size')
-    parser.add_argument('--test_freq', type = int, default = 5, help = 'number of evaluation')
+    parser.add_argument('--test_freq', type = int, default =10, help = 'number of evaluation')
     parser.add_argument('--patches', type = int, default = 7, help = 'number of patches')
     parser.add_argument('--epoches', type = int, default = 50, help = 'epoch number')
     parser.add_argument('--learning_rate', type = float, default = 5e-4, help = 'learning rate')
