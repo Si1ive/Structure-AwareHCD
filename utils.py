@@ -1,348 +1,463 @@
-# -*- coding:utf-8 -*-
-# Author:Ding
-import os
-import random
-
-from tqdm import tqdm
-import platform
-import numpy as np
 import scipy.io as sio
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix
+import numpy as np
+import matplotlib.pyplot as plt
+import math
+import torch.nn as nn
 import torch
-from torch.utils.data import Dataset, DataLoader
+import random
+import argparse
+from sklearn import metrics, preprocessing
+from torch.utils.data import DataLoader
+import torch.utils.data as Data
 
 
-# set experiment seed
-def set_seed(seed):
-    # python
-    random.seed(seed)
-    # numpy
-    np.random.seed(seed)
-    # torch
+def setup_seed(seed):
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.enabled = True
 
-# 边界拓展：镜像
-def mirror_hsi(height, width, band, input_normalize, patch = 5):
-    padding = patch // 2
-    mirror_hsi = np.zeros((height + 2 * padding, width + 2 * padding, band)).astype(np.float16)
-    # 中心区域
-    mirror_hsi[padding:(padding + height), padding:(padding + width), :] = input_normalize
-    # 左边镜像
-    for i in range(padding):
-        mirror_hsi[padding:(height + padding), i, :] = input_normalize[:, padding - i - 1, :]
-    # 右边镜像
-    for i in range(padding):
-        mirror_hsi[padding:(height + padding), width + padding + i, :] = input_normalize[:, width - 1 - i, :]
-    # 上边镜像
-    for i in range(padding):
-        mirror_hsi[i, :, :] = mirror_hsi[padding * 2 - i - 1, :, :]
-    # 下边镜像
-    for i in range(padding):
-        mirror_hsi[height + padding + i, :, :] = mirror_hsi[height + padding - 1 - i, :, :]
-
-    print("**************************************************")
-    print("patch is : {}".format(patch))
-    print("mirror_image shape : [{0},{1},{2}]".format(mirror_hsi.shape[0], mirror_hsi.shape[1], mirror_hsi.shape[2]))
-    print("**************************************************")
-    return mirror_hsi
-
-
-# -------------------------------------------------------------------------------
-# 获取patch的图像数据
-def get_patches(data, img_height, img_width, channel, patch_size):
-    """get patches"""
-    # patch_size:the size of target pixel's neighborhood
-    patches = np.empty([img_height * img_width, patch_size, patch_size, channel],
-                       dtype = 'float16')  # img_height * img_width
-    for i in range(img_height):
-        for j in range(img_width):
-            patches[i * img_width + j, ...] = data[i:i + patch_size, j:j + patch_size, :]
-
-    # patches = (img_height * img_width, patch_size, patch_size, band_size)
-    return patches
-
-
-def make_data(args, patch_size = 5, n_class = 2):
-    """读取数据——>将数据整理为B×b×N格式——>标准化——>"""
-    global path, data_t1, data_t2, y
-    if platform.system().lower() == 'windows':
-        print("[Info]: Use Windows!")
-        path = 'E:'
-    elif platform.system().lower() == 'linux':
-        print("[Info]: Use Linux!")
-        path = '/home/zzh/remote_data'
-    if args.dataset == 'China':
-        data = sio.loadmat(path + '/DataSet/China&USA/China_Change_Dataset.mat')  # data set X
-        data_t1 = data['T1']
-        data_t2 = data['T2']
-        if n_class == 2:  # the binary ground truth
-            y = 1.0 * data['Binary']
-        else:  # multiple
-            y = sio.loadmat(path + '/DataSet/China&USA/China_multiple_gt.mat')['Multiple']
-    elif args.dataset == 'USA':
-        data = sio.loadmat(path + '/DataSet/China&USA/USA_Change_Dataset.mat')  # data set X
-        data_t1 = data['T1']
-        data_t2 = data['T2']
-        if n_class == 2:  # the binary ground truth
-            y = 1.0 * data['Binary']
-        else:  # multiple
-            y = sio.loadmat(path + '/DataSet/China&USA/USA_multiple_gt.mat')['Multiple']
-    elif args.dataset == 'Yellow River':
-        args.data_shape = [198, 463, 241]
-        args.data_split_num = 1
-        data_t1 = sio.loadmat(path + '/DataSet/Yellow River/river_before.mat')['river_before']  # data set X
-        data_t2 = sio.loadmat(path + '/DataSet/Yellow River/river_after.mat')['river_after']  # data set X
-        y = sio.loadmat(path + '/DataSet/Yellow River/groundtruth.mat')['lakelabel_v1'] / 255  # the binary ground truth
-    elif args.dataset == 'Bay_Area':
-        args.data_shape = [224, 600, 500]
-        data_t1 = sio.loadmat(path + '/DataSet/three_data/bayArea/Bay_Area_2013.mat')['HypeRvieW']
-        data_t2 = sio.loadmat(path + '/DataSet/three_data/bayArea/Bay_Area_2015.mat')['HypeRvieW']
-        y = sio.loadmat(path + '/DataSet/three_data/bayArea/bayArea_gtChanges.mat')['HypeRvieW']
-    elif args.dataset == 'Barbara':
-        args.data_shape = [224, 984, 740]
-        data_t1 = sio.loadmat(path + '/DataSet/three_data/santaBarbara/barbara_2013_170.mat')['HypeRvieW']
-        data_t2 = sio.loadmat(path + '/DataSet/three_data/santaBarbara/barbara_2014_170.mat')['HypeRvieW']
-        y = sio.loadmat(path + '/DataSet/three_data/santaBarbara/barbara_gtChanges.mat')['HypeRvieW']
-    elif args.dataset == 'Farmland':
-        args.data_shape = [154, 450, 140]
-        data_t1 = sio.loadmat(path + '/Farmland/T1.mat')['T1']
-        data_t2 = sio.loadmat(path + '/Farmland/T2.mat')['T2']
-        y = sio.loadmat(path + '/Farmland/GT.mat')['GT']
-
-
-    img_height, img_width, channel = data_t1.shape
-    # normalize data by band norm
-    data_t1_normalize, data_t2_normalize = np.zeros(data_t1.shape), np.zeros(data_t1.shape)
-    for i in range(channel):
-        x_min = min(data_t1[..., i].min(), data_t2[..., i].min())
-        x_max = max(data_t1[..., i].max(), data_t2[..., i].max())
-        data_t1_normalize[..., i] = (data_t1[..., i] - x_min) / (x_max - x_min)
-        data_t2_normalize[..., i] = (data_t2[..., i] - x_min) / (x_max - x_min)
-
-    # get patches
-    # [img_height * img_width, patch_size, patch_size, band_size]
-    mirror_t1 = mirror_hsi(img_height, img_width, channel, data_t1_normalize, patch_size)
-    mirror_t2 = mirror_hsi(img_height, img_width, channel, data_t2_normalize, patch_size)
-    patches_t1 = get_patches(mirror_t1, img_height, img_width, channel, patch_size).astype(np.float16)
-    patches_t2 = get_patches(mirror_t2, img_height, img_width, channel, patch_size).astype(np.float16)
-
-    y = np.reshape(y, (-1,))
-    if args.dataset in ['Bay_Area', 'Barbara']:
-        labeled = np.argwhere(y != 0)  # 0-black:unlabeled, 1-gray:changed, 2-white:unchanged
-        y = 2 - y  # 替换label
+def get_sample(dataset):
+    layernum = []
+    C,H, W = 0,0,0
+    # feature_dim = 128
+    data_split_num = 1 # for LARGE DATASET like Bay, Barbara, GF5B_BI, data is firstly split into several pieces
+    # for dataset,
+    # 'GRS-GRS' is recommended if the height >> width, such as Hermiston(307, 241), Farmland(450, 140), River(463, 241),
+    # 'GCS-GRS' is recommended if the height ~= width, such as Bay(600, 500), Barbara(984, 740),GF5B_BI(463, 241)
+    GAS_mode = 'GRS-GRS'
+    if dataset == 'Hermiston':
+        C, H, W = 154, 307, 241
+        layernum = [C, 128, 128, 128, 128,128, 128]   # February, MM1
+        data_split_num = 1
+        GAS_mode = 'GRS-GRS'
+    elif dataset == 'Farmland':
+        C, H, W = 154, 420, 140
+        layernum = [C, 128, 128, 128, 128, 128, 128]  # February, MM1
+        data_split_num = 1
+        GAS_mode = 'GRS-GRS'
+    elif dataset == 'River':
+        C, H, W = 198, 463, 241
+        layernum = [C, 128, 128, 128, 128, 128, 128]  # February, MM1
+        data_split_num = 1
+        GAS_mode = 'GRS-GRS'
+    elif dataset == 'Bay':
+        C, H, W = 224, 600, 500
+        layernum = [C, 128, 128, 128, 128, 128, 128]  # February, MM1;[224, 180, 180, 180, 180, 180, 180]
+        data_split_num = 2
+        GAS_mode = 'GCS-GRS'
+    elif dataset == 'Barbara':
+        C, H, W = 224, 984, 740
+        layernum = [C, 128, 128, 128, 128, 128, 128]  # February, MM1
+        data_split_num = 4
+        GAS_mode = 'GCS-GRS'
+    elif dataset == 'GF5B_BI':
+        C, H, W = 150, 512, 512
+        layernum = [C, 128, 128, 128, 128, 128, 128]  # February, MM1
+        data_split_num = 4
+        GAS_mode = 'GCS-GRS'
     else:
-        labeled = np.array([i for i in range(len(y))])
-
-    x = np.transpose(np.concatenate((patches_t1, patches_t2), axis = -1), (0, 3, 1, 2))
-
-    target = y
-    del path, data_t1, data_t2, y
-
-    return x, target, labeled
+        raise ValueError("Dataset should be one of the {Hermiston, Farmland, River, Bay, Barbara, GF5B_BI}.")
+    return data_split_num,GAS_mode, layernum, C, H, W
 
 
-class MyDataset(Dataset):
-    def __init__(self, x, y = None, transform = None):
-        if transform:
-            self.x = x
-        else:
-            self.x = torch.FloatTensor(x)
-        # label是需要LongTensor型
-        self.y = y
-        if y is not None:
-            self.y = torch.LongTensor(y)
-        self.transform = transform
+def get_args(seed, Dataset, Dataset_path):
+    parser = argparse.ArgumentParser('argument for training')
+    parser.add_argument('--Dataset', default=Dataset,type=str, help='path filename of training data')
+    parser.add_argument('--Dataset_path', default=Dataset_path,type=str, help='path filename of training data')
+    parser.add_argument('--model_name', default='SAHCD',type=str, help='path filename of training data')
+    parser.add_argument('--loss_strategy', choices=['single', 'double'], default='double', help='loss_strategy')
+    parser.add_argument('--dim', type = int, default = 64, help = 'feature dimension')
 
-    def __len__(self):
-        return len(self.x)
+    data_split_num,GAS_mode, layernum,C,H, W = get_sample(Dataset)
+    parser.add_argument('--layernum', default=layernum, type=list, nargs='+', help='layernum')
+    parser.add_argument('--seed', default=seed, type=int, metavar='seed', help='seed for randn seed')
+    parser.add_argument('--C', default=C, type=int, metavar='C', help='C')
+    parser.add_argument('--H', default=H, type=int, metavar='H', help='H')
+    parser.add_argument('--W', default=W, type=int, metavar='W', help='W')
+    parser.add_argument('--epochs', default=200, type=int, metavar='N', help='defalut: number of total epochs to run')
+    parser.add_argument('--gamma', type=float, default=0.9, help='gamma')
+    parser.add_argument('--data_split_num', default=data_split_num, type=int, metavar='N', help='')
 
-    def __getitem__(self, index):
-        X = self.x[index]
-        if self.transform is not None:
-            X = self.transform(X)
-        if self.y is not None:
-            Y = self.y[index]
-            return X, Y
-        else:
-            return X
-
-
-def split_train_val(x, y3, args):
-    """ratio: the ratio of train data"""
-    if not os.path.exists('./train_index'):
-        os.mkdir(f'./train_index')
-    ratio_str = "{:.2f}".format(args.ratio).replace('.', '')
-    if not os.path.exists(f'./train_index/{args.dataset}-train-index-{ratio_str}-{args.seed}.npy'):
-        train_x_set, val_x_set, train_y_set, val_y_set = train_test_split(x, y3, test_size = 1 - args.ratio,
-                                                                          random_state = args.seed,
-                                                                          stratify = y3)
-        train_index = get_train_index(x, train_x_set)
-        np.save(f'./train_index/{args.dataset}-train-index-{ratio_str}-{args.seed}.npy', train_index)
+    pixel_num = int(H * W / data_split_num)
+    parser.add_argument('--pixel_num', default=pixel_num, type=int, metavar='N', help='')
+    if Dataset =='GF5B_BI':
+        parser.add_argument('--ChangeSamle_num', default=1000, type=int, metavar='N', help='')
+        parser.add_argument('--UncangeSample_num', default=1000, type=int, metavar='N', help='')
     else:
-        train_index = np.load(f'./train_index/{args.dataset}-train-index-{ratio_str}-{args.seed}.npy')
-        index = np.arange(0, len(y3))
-        val_index = np.delete(index, train_index)
-        train_x_set = x[train_index]
-        train_y_set = y3[train_index]
-        val_x_set = x[val_index]
-        val_y_set = y3[val_index]
+        parser.add_argument('--ChangeSamle_num', default=500, type=int, metavar='N', help='')
+        parser.add_argument('--UncangeSample_num', default=500, type=int, metavar='N', help='')
 
-    return train_x_set, train_y_set, val_x_set, val_y_set
+    parser.add_argument('--lr', '--learning-rate', default=0.0005, type=float, metavar='LR',
+                        help='initial (base) learning rate', dest='lr')
+    args = parser.parse_args()
+    print('Dataset:', args.Dataset)
+    print('epochs:', args.epochs)
+    print('lr:', args.lr)
+    return args
+
+def load_dataset(data_path, dataset):
+    TT1, TT2, gt_hsi, TOTAL_SIZE, TRAIN_SIZE, VALIDATION_SPLIT=0,0,0,0,0,0
+    data_path = data_path + dataset
+    TT1 = sio.loadmat( '/' + data_path + '/T1.mat')['T1']
+    TT2 = sio.loadmat('/' +data_path + '/T2.mat')['T2']
+    gt_hsi = sio.loadmat('/' +data_path + '/GT.mat')['GT']
+    return TT1, TT2, gt_hsi
+
+def pre_process(args, T11,T22,gt,ChangeSamle_num=500, UncangeSample_num=500):
+    H, W, C = T11.shape
+    if args.Dataset in ['River']:
+        data1 = np.zeros(T11.shape)
+        data2 = np.zeros(T11.shape)
+        for i in range(T11.shape[2]):
+            input_max = max(np.max(T11[:, :, i]), np.max(T22[:, :, i]))
+            input_min = min(np.min(T11[:, :, i]), np.min(T22[:, :, i]))
+            data1[:, :, i] = (T11[:, :, i] - input_min) / (input_max - input_min)
+            data2[:, :, i] = (T22[:, :, i] - input_min) / (input_max - input_min)
+    else:
+        T11 = np.reshape(T11, [H * W, C])
+        T22 = np.reshape(T22, [H * W, C])
+
+        data1 = preprocessing.scale(T11, axis=0)  # each channel
+        data2 = preprocessing.scale(T22, axis=0)
+        data1 = data1.reshape(H, W, C)
+        data2 = data2.reshape(H, W, C)
+
+    if args.data_split_num >1:
+        data1 = splitImg(data1, args.data_split_num)  # [num_split, h, w, C]
+        data2 = splitImg(data2, args.data_split_num)
+        data1 = torch.tensor(data1, dtype=torch.float32).cuda()  # [num_split, C, H,W]
+        data2 = torch.tensor(data2, dtype=torch.float32).cuda()
+        data1 = data1.permute(0, 3, 1, 2)
+        data2 = data2.permute(0, 3, 1, 2)
+
+        idx, binary_label = select_sample_frmGT(args, gt, ChangeSamle_num, UncangeSample_num)
+        idx_c_u_split, label_c_u_split = split_idx_label(idx, binary_label, args.data_split_num, H, W)
+        idx_new = torch.tensor(idx_c_u_split, dtype=torch.long).cuda()
+        binary_label = torch.from_numpy(binary_label).squeeze().cuda()  # [num_split, n]
+        binary_label_new = torch.tensor(label_c_u_split.squeeze(), dtype=torch.long).cuda()
+        torch_dataset = Data.TensorDataset(data1, data2, idx_new, binary_label_new)
+        train_Loader = DataLoader(dataset=torch_dataset, batch_size=1, shuffle=True)
+
+    else:
+        data1 = torch.tensor(np.transpose(data1, [2, 0, 1]), dtype=torch.float32).unsqueeze(0).cuda()
+        data2 = torch.tensor(np.transpose(data2, [2, 0, 1]), dtype=torch.float32).unsqueeze(0).cuda()
+
+        idx, binary_label = select_sample_frmGT(args, gt, ChangeSamle_num, UncangeSample_num)
+        idx = torch.tensor(idx).unsqueeze(0).cuda()
+        binary_label = torch.tensor(binary_label, dtype=torch.long).unsqueeze(0).cuda()
+
+        torch_dataset = Data.TensorDataset(data1, data2, idx, binary_label)
+        train_Loader = DataLoader(dataset=torch_dataset, batch_size=1, shuffle=True)
+    # return data1,data2, train_Loader
+    return data1, data2, idx, binary_label, train_Loader
+def select_sample_frmGT(args, GT, change_num, Uchange_num):
+    setup_seed(0) # defalut
+
+    print('GT.shape:', GT.shape)
+    GT = np.reshape(GT, [-1, 1]).squeeze()
+    if args.Dataset in ['Bay' ,'Barbara']:
+        value_c, value_uc = 1, 2
+    elif args.Dataset in ['Farmland','Hermiston','River','GF5B_BI']: # change,unchange=2,1
+        value_c, value_uc = 1, 0
+    else:
+        raise ValueError("Unknow dataset")
+
+    uc_position = np.array(np.where(GT == value_uc)).transpose(1, 0)
+    c_position = np.array(np.where(GT == value_c)).transpose(1, 0)
+    selected_uc = np.random.choice(uc_position.shape[0], int(Uchange_num), replace = False)
+    selected_c = np.random.choice(c_position.shape[0], int(change_num), replace = False)
+    selected_uc_position = uc_position[selected_uc]  # (500,),adarray
+    selected_c_position = c_position[selected_c]
+    idx = np.concatenate((selected_c_position.squeeze(), selected_uc_position.squeeze()), axis=0)
+    label = np.concatenate((np.ones([1, change_num], dtype=int), np.zeros([1, Uchange_num])), axis=1)
+    label = label.squeeze()
+    # print('selected change num ', str(change_num))
+    # print('selected Unchange num ', str(Uchange_num))
+    return idx,label
+
+def splitImg(img, num):
+    # idx: index according to python , 1D[list]
+    # H, W, C = img.shape
+    H , W = img.shape[0], img.shape[1]
+    img_split = []
+    if num ==2:
+        img_split = np.split(img,2,axis=0) #img_split1:[H/2, W, C]
+        img_split = np.asarray(img_split)
+    elif num==4:
+        img_split1, img_split2 = np.split(img, 2, axis=0)  # img_split1:[H/2, W, C]
+        img_split1 = np.split(img_split1, 2, axis=1)  # img_split11:[H/2, W/2, C]
+        img_split2 = np.split(img_split2, 2, axis=1)  # img_split11:[H/2, W/2, C]
+        img_split = np.concatenate([img_split1, img_split2], axis=0)
+    else:
+        print(' the num of split parts should be even number and equal to 2 or 4')
+    return img_split
+def recover_split_img(img_split):
+    # img_split,the binary change result,[2, num_split, h,w]
+    img_recover =[]
+    num_class,num_split, h,w = img_split.shape
+    if num_split==2:  # [num_class,num_split, H/2,W]
+        img_recover = img_split.reshape([num_class, num_split*h,w]) # [num_class,H,W]
+    elif num_split==4: # [num_class,num_split, H/2,W/2]
+        img_recover1 = torch.cat((img_split[:,0, :,:], img_split[:,1, :,:]), dim=-1) # [num_class,H/2,W]
+        img_recover2 = torch.cat((img_split[:, 2, :, :], img_split[:, 3, :, :]), dim=-1)  # [num_class,H/2,W]
+        img_recover = torch.cat((img_recover1,img_recover2), dim=-2)  # [num_class,H,W]
+    else:
+        print(' the num of split parts should be even number and equal to 2 or 4')
+    return img_recover  # [num_class,H,W]
+# for bay and barbara dataset
+def split_idx_label(idx, binary_label, num, H,W):
+    # idx:and the corresponding training idx is split
+    # num: split the img and corresponding idx into num parts
+    idx_c_u_show_split = []
+    label_c_u_split = []
+    idx_c = np.where(binary_label == 1)[0]
+    idx_c = idx[idx_c]
+    idx_u = np.where(binary_label == 0)[0]
+    idx_u = idx[idx_u]
+
+    # for changed training sample
+    idx_show = np.zeros([H * W, 1])
+    idx_show[idx_c] = 1
+    idx_show[idx_u] = -1
+    idx_show = np.reshape(idx_show, [H,W])
+    if num ==2 or 4:
+        tmp_idx = []
+        tmp_label = []
+        # idx_show_split = np.split(idx_show, 4, axis=0)  # img_split1:[H/2, W/2]
+        idx_show_split = splitImg(idx_show, num) # img_split1:[H/2, W/2]
+        idx_show_split = idx_show_split.reshape([num, -1, 1])
+        num_size = []
+        for i in range(num):
+            idx_show_split_i = idx_show_split[i]
+            idx_c_show_split_i = np.where(idx_show_split_i == 1)[0]
+            idx_u_show_split_i = np.where(idx_show_split_i == -1)[0]
+            # idx_c_u_show_split_i = np.stack([idx_c_show_split_i, idx_u_show_split_i], axis=0)
+            idx_c_u_show_split_i = np.concatenate([idx_c_show_split_i, idx_u_show_split_i], axis=0)
+            tmp_idx.append(idx_c_u_show_split_i)
+
+            label_c_i = np.ones([idx_c_show_split_i.size,])  # label of change is 1
+            label_u_i = np.zeros([idx_u_show_split_i.size, ]) # label of unchange is 0
+            label_c_u_i = np.concatenate([label_c_i, label_u_i], axis=0)
+            tmp_label.append(label_c_u_i)
+
+            num_i = idx_c_u_show_split_i.size
+            num_size.append(num_i)
+        num_size_np = np.asarray(num_size)
+        num_max = np.max(num_size_np)
+        # new_idx_c_u_show_split = []
+        for i in range(num):
+            if num_size[i]<num_max:
+                diff = num_max - num_size[i]
+                diff = -1 * np.ones([diff, ])
+                idx_c_u_show_split_i = tmp_idx[i]
+                idx_c_u_show_split_i = np.concatenate([idx_c_u_show_split_i, diff], axis=0)
+                idx_c_u_show_split.append(idx_c_u_show_split_i)
+
+                label_c_u_i = tmp_label[i]
+                label_c_u_i = np.concatenate([label_c_u_i, diff], axis=0)
+                label_c_u_split.append(label_c_u_i)
+            else:
+                idx_c_u_show_split_i = tmp_idx[i]
+                idx_c_u_show_split.append(idx_c_u_show_split_i)
+
+                label_c_u_i = tmp_label[i]
+                label_c_u_split.append(label_c_u_i)
+                # idx_c_u_show_split[i] = np.concatenate([idx_c_u_show_split, diff], axis=0)
+    else:
+        print(' the num of split parts should be even number and equal to 2 or 4')
+    idx_c_u_show_split = np.asarray(idx_c_u_show_split)
+    label_c_u_split = np.asarray(label_c_u_split)
+    return idx_c_u_show_split,label_c_u_split
 
 
-def get_train_index(data, data_train):
-    print('Start get train index!')
-    train_index = []
-    pbar = tqdm(total = len(data_train), ncols = 0, desc = f"Processing", unit = "step")
-    for i in range(len(data_train)):
-        pbar.set_postfix(step = i + 1)
-        pbar.update()
-        for j in range(len(data)):
-            if (data_train[i, :10, :10] == data[j, :10, :10]).all():
-                train_index.append(j)
-                break
-    pbar.close()
+def initNetParams(net):
+    '''Init net parameters.'''
+    for m in net.modules():
+        if isinstance(m, nn.Conv3d):
+            nn.init.kaiming_normal_(m.weight.data)
+            # init.xavier_uniform(m.weight)
+            if m.bias:
+                nn.init.constant_(m.bias, 0)
 
-    return train_index
-
-
-# -------------------------------------------------------------------------------
-class AvgrageMeter(object):
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.avg = 0
-        self.sum = 0
-        self.cnt = 0
-
-    def update(self, val, n = 1):
-        self.sum += val * n
-        self.cnt += n
-        self.avg = self.sum / self.cnt
-
-
-# -------------------------------------------------------------------------------
-def accuracy(output, target, topk = (1,)):
-    maxk = max(topk)
-    batch_size = target.size(0)
-
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res, target, pred.squeeze()
-
-
-# -------------------------------------------------------------------------------
-def cal_results(matrix):
-    shape = np.shape(matrix)
-    number = 0
-    sum = 0
-    AA = np.zeros([shape[0]], dtype=float)
-    for i in range(shape[0]):
-        number += matrix[i, i]
-        AA[i] = matrix[i, i] / np.sum(matrix[i, :])
-        sum += np.sum(matrix[i, :]) * np.sum(matrix[:, i])
-    OA = number / np.sum(matrix)
-    AA_mean = np.mean(AA)
-    pe = sum / (np.sum(matrix) ** 2)
-    Kappa = (OA - pe) / (1 - pe)
-    return OA, AA_mean, Kappa, AA
-
-
-# -------------------------------------------------------------------------------
-def output_metric(tar, pre):
-    matrix = confusion_matrix(tar, pre)
-    OA, AA_mean, Kappa, AA = cal_results(matrix)
-    return OA, AA_mean, Kappa, AA
-
-
-# -------------------------------------------------------------------------------
-# validate model
-def valid_epoch(network, model, valid_loader, criterion, device):
-    objs = AvgrageMeter()
-    top1 = AvgrageMeter()
-    tar = np.array([])
-    pre = np.array([])
-    for batch_idx, (batch_data, batch_target) in enumerate(valid_loader):
-        batch_data = batch_data.to(device)
-        batch_target = batch_target.to(device)
-
-        if network == 'sahcd':
-            batch_pred,_ = model(batch_data)
-            loss = criterion(batch_pred, batch_target)
+        elif isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight.data)      # m.weight.data.normal_(0, 0.001)
+            # init.xavier_uniform(m.weight)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+def adjust_learning_rate(optimizer, init_lr, epoch, epochs):
+    """Decay the learning rate based on schedule"""
+    cur_lr = init_lr * 0.5 * (1. + math.cos(math.pi * epoch / epochs))
+    for param_group in optimizer.param_groups:
+        if 'fix_lr' in param_group and param_group['fix_lr']:
+            param_group['lr'] = init_lr
         else:
-            batch_pred = model(batch_data)
-            loss = criterion(batch_pred, batch_target)
+            param_group['lr'] = cur_lr
 
-        prec1, t, p = accuracy(batch_pred, batch_target, topk = (1,))
-        n = batch_data.shape[0]
-        objs.update(loss.data, n)
-        top1.update(prec1[0].data, n)
-        tar = np.append(tar, t.data.cpu().numpy())
-        pre = np.append(pre, p.data.cpu().numpy())
+def access(args,gt,bmap):
+    if args.Dataset in ['Bay','Barbara']:
+        oa_kappa = two_cls_access_for_Bay_Barbara(gt, bmap)
+    elif args.Dataset in ['Farmland','Hermiston','River','GF5B_BI']: # change,unchange=2,1
+        oa_kappa = two_cls_access(gt, bmap)
+    else:
+        raise ValueError("Unknow dataset")
+    return oa_kappa
+def two_cls_access(reference,result):
+    # 对二类变化检测的结果进行精度评价，指标为kappad系数和OA值
+    # 输入：
+    #      reference：二元变化reference(二值图，H*W)
+    #      resultz:算法检测得到的二类变化结果图(二值图，H*W)]
+    oa_kappa = []
+    m,n = reference.shape
+    if reference.shape != result.shape:
+        print('the size of reference shoulf be equal to that of result')
+        return oa_kappa
+    reference = np.reshape(reference, -1)
+    result = np.reshape(result, -1)
+    label_0 = np.where(reference == 0)
+    label_1 = np.where(reference == 1)
+    predict_0 = np.where(result == 0)
+    predict_1 = np.where(result == 1)
+    label_0 = label_0[0]
+    label_1 = label_1[0]
+    predict_0 = predict_0[0]
+    predict_1 = predict_1[0]
+    tp = set(label_1).intersection(set(predict_1))  # True Positive
+    tn = set(label_0).intersection(set(predict_0))  # False Positive
+    fp = set(label_0).intersection(set(predict_1))  # False Positive
+    fn = set(label_1).intersection(set(predict_0))  # False Negative
 
-    return tar, pre
+    precision = len(tp) / (len(tp) + len(fp))
+    recall = len(tp) / (len(tp) + len(fn))
 
+    precision = round(precision, 4)
+    recall = round(recall, 4)
+    F1 = 2 * (precision * recall) / (precision + recall)
+    F1 = round(F1, 4)
+    print('F1=   ' + str(F1))
+    print('recall=   ' + str(recall))
+    print('precision=   ' + str(precision))
 
-def test_epoch(network, model, test_loader, device):
-    objs = AvgrageMeter()
-    top1 = AvgrageMeter()
-    tar = np.array([])
-    pre = np.array([])
-    for batch_idx, (batch_data, batch_target) in enumerate(test_loader):
-        batch_data = batch_data.to(device)
-        batch_target = batch_target.to(device)
+    oa = (len(tp)+len(tn))/m/n      # Overall precision
+    pe = (len(label_1)*len(predict_1)+len(label_0)*len(predict_0))/m/n/m/n
+    kappa = (oa-pe)/(1-pe)
+    oa = round(oa, 4)
+    kappa = round(kappa, 4)
+    oa_kappa.append('OA')
+    oa_kappa.append(oa)
+    oa_kappa.append('kappa')
+    oa_kappa.append(kappa)
+    oa_kappa.append('F1')
+    oa_kappa.append(F1)
+    oa_kappa.append('recall')
+    oa_kappa.append(recall)
+    oa_kappa.append('precision')
+    oa_kappa.append(precision)
 
-        batch_pred,_ = model(batch_data)
+    print('OA:  ' + str(oa) + '    ' + 'kappa:  ' + str(kappa))
+    return oa_kappa
+def two_cls_access_for_Bay_Barbara(reference,result):
+    # 对二类变化检测的结果进行精度评价，指标为kappad系数和OA值
+    # 输入：
+    #      reference：二元变化reference(二值图，H*W), change=1; unchanged=2;uncertain=0
+    #      resultz:算法检测得到的二类变化结果图(二值图，H*W)]
+    oa_kappa = []
+    # m,n = reference.shape
+    if reference.shape != result.shape:
+        print('the size of reference shoulf be equal to that of result')
+        return oa_kappa
+    reference = np.reshape(reference, -1)
+    result = np.reshape(result, -1)
 
-        _, pred = batch_pred.topk(1, 1, True, True)
-        pp = pred.squeeze()
-        pre = np.append(pre, pp.data.cpu().numpy())
-    return pre
+    label_0 = np.where(reference == 2)  # Unchanged
+    label_1 = np.where(reference == 1)  # Changed
+    predict_0 = np.where(result == 0)  # Unchanged
+    predict_1 = np.where(result == 1)  # Changed
+    label_0 = label_0[0]
+    label_1 = label_1[0]
+    predict_0 = predict_0[0]
+    predict_1 = predict_1[0]
+    tp = set(label_1).intersection(set(predict_1))  # True Positive
+    tn = set(label_0).intersection(set(predict_0))  # True Negative
+    fp = set(label_0).intersection(set(predict_1))  # False Positive
+    fn = set(label_1).intersection(set(predict_0))  # False Negative
 
+    precision = len(tp) / (len(tp) + len(fp))  # (预测为1且正确预测的样本数) / (所有真实情况为1的样本数)
+    recall = len(tp) / (len(tp) + len(fn))  # (预测为1且正确预测的样本数) / (所有真实情况为1的样本数)
 
-# -------------------------------------------------------------------------------
-# train model
-def train_epoch(network, model, train_loader, criterion, optimizer, device):
-    objs = AvgrageMeter()
-    top1 = AvgrageMeter()
-    tar = np.array([])
-    pre = np.array([])
-    for batch_idx, (batch_data, batch_target) in enumerate(train_loader):
-        batch_data = batch_data.to(device)
-        batch_target = batch_target.to(device)
-        optimizer.zero_grad()
+    precision = round(precision, 4)
+    recall = round(recall, 4)
+    F1 = 2 * (precision * recall) / (precision + recall)
+    F1 = round(F1, 4)
+    print('F1=   ' + str(F1))
+    print('recall=   ' + str(recall))
+    print('precision=   ' + str(precision))
+    total_num = len(label_0) +len(label_1)
+    oa = (len(tp) + len(tn)) / total_num  # Overall precision
+    pe = ((len(tp)+len(fn))*(len(tp)+len(fp)) +(len(fp)+len(tn))*(len(fn)+len(tn)))/ total_num / total_num
 
-        if network == 'sahcd':
-            batch_pred1,batch_pred2 = model(batch_data)
-            loss1 = criterion(batch_pred1, batch_target)
-            loss2 = criterion(batch_pred2, batch_target)
-            loss = (loss1 + loss2) /2
-        else:
-            batch_pred = model(batch_data)
-            loss = criterion(batch_pred, batch_target)
+    kappa = (oa-pe)/(1-pe)
+    oa = round(oa, 4)
+    kappa = round(kappa, 4)
+    oa_kappa.append('OA')
+    oa_kappa.append(oa)
+    oa_kappa.append('kappa')
+    oa_kappa.append(kappa)
+    oa_kappa.append('F1')
+    oa_kappa.append(F1)
+    oa_kappa.append('recall')
+    oa_kappa.append(recall)
+    oa_kappa.append('precision')
+    oa_kappa.append(precision)
 
-        loss.backward()
-        optimizer.step()
+    print('OA:  ' + str(oa) + '    ' + 'kappa:  ' + str(kappa))
+    # print('whole OA is' + str(oa))
+    # print('whole kappa is' + str(kappa))
+    return oa_kappa
+def get_avg_oa_kappa(oa, kappa, f1, recall, precision, seed):
+    num_repeat = len(seed)
+    oa = oa/len(seed)
+    kappa = kappa / len(seed)
+    f1 = f1 / len(seed)
+    recall = recall / len(seed)
+    precision = precision / len(seed)
 
-        prec1, t, p = accuracy(batch_pred, batch_target, topk = (1,))
-        n = batch_data.shape[0]
-        objs.update(loss.data, n)
-        top1.update(prec1[0].data, n)
-        tar = np.append(tar, t.data.cpu().numpy())
-        pre = np.append(pre, p.data.cpu().numpy())
-    return top1.avg, objs.avg, tar, pre
-# Example
-# data, target, labels = make_data('China', patch_size = 3, band_patch = 3)
+    oa = round(oa, 4)
+    kappa = round(kappa, 4)
+    precision = round(precision, 4)
+    recall = round(recall, 4)
+    f1 = round(f1, 4)
+    oa_kappa = []
+    oa_kappa.append('OA')
+    oa_kappa.append(oa)
+    oa_kappa.append('kappa')
+    oa_kappa.append(kappa)
+    oa_kappa.append('F1')
+    oa_kappa.append(f1)
+    oa_kappa.append('recall')
+    oa_kappa.append(recall)
+    oa_kappa.append('precision')
+    oa_kappa.append(precision)
+    return oa_kappa
+
+def write2txt(filename, args, repeat_OA_KAPPA,avg_oa_kappa):
+    print('save filename:', '\n',filename)
+    file3 = open(filename, 'w', encoding='UTF-8')
+    file3.write(f'model_name:{args.model_name}\n')
+    file3.write(f'dataset:{args.Dataset}\n')
+
+    # avgerage oa_kappa
+    file3.write('1. Average OA, Kappa, F1, Recall, Precision: ' + '\n')
+    file3.write(str(avg_oa_kappa) + '\n')
+
+    #  repeated  oa_kappa
+    num_runs = repeat_OA_KAPPA.shape[0]
+    file3.write('\n')
+    file3.write('2. Repeated Experiments, OA, Kappa, F1, Recall, Precision:' + '\n')
+    file3.write('num_runs:' +str(num_runs)+ '\n')
+    file3.write(str(repeat_OA_KAPPA) + '\n')
+
+    file3.close()

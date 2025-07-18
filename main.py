@@ -1,242 +1,142 @@
-# -*- coding:utf-8 -*-
-# Author:Ding
-import os
-import time
-import argparse
 
 import scipy.io as sio
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.model_selection import ParameterGrid
+import time
+import os
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-
+from torch import optim
+import torch.backends.cudnn as cudnn
+from utils import setup_seed,get_args,load_dataset,write2txt
+from utils import pre_process, adjust_learning_rate
+from utils import initNetParams,recover_split_img,access,get_avg_oa_kappa
 from backbone import SAHCD
-from comparison_models.mfcen.vit_pytorch import ViT
 
-from comparison_models.sst.sstvit import SSTViT
-from utils import set_seed, make_data, MyDataset, split_train_val, output_metric, \
-    train_epoch, valid_epoch, test_epoch
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+torch.set_num_threads(2)
 
 
-def main(args, search_num):
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    print(f"[Info]: Use {device} now!")
-
-    all_x, all_y, labeled_index = make_data(args, patch_size = args.patches)
-    # 创建训练数据集 & 验证数据集
-    labeled_x, labeled_y = all_x[labeled_index].squeeze(), all_y[labeled_index].squeeze()
-    train_x_set, train_y_set, val_x_set, val_y_set = split_train_val(labeled_x, labeled_y, args)
-    # 创建Dataset
-    train_set = MyDataset(train_x_set, train_y_set)
-    train_loader = DataLoader(train_set, batch_size = args.batch_size,
-                              num_workers = args.num_workers, pin_memory = True, shuffle = True)
-    val_set = MyDataset(val_x_set, val_y_set)
-    val_loader = DataLoader(val_set, batch_size = args.batch_size,
-                            num_workers = args.num_workers, pin_memory = True, shuffle = True)
-    print(f"[Info]: Finish loading data!", flush = True)
-    # -------------------------------------------------------------------------------
-    # create model
-    if args.network =='sahcd':
-        model = SAHCD(
-            dims=[args.data_shape[0],128,128,128]
+def train(args):
+    setup_seed(args.seed)
+    T11, T22, gt = load_dataset(args.Dataset_path, args.Dataset)
+    data1, data2, idx, binary_label, train_Loader = pre_process(args, T11, T22,gt,
+                                                                args.ChangeSamle_num,args.UncangeSample_num)
+    if args.model_name == 'SAHCD':
+        model=SAHCD(
+            dims=[args.C,args.dim,args.dim,args.dim],
+            loss_strategy = args.loss_strategy,
         )
-    elif args.network =='mfcen':
-        model = ViT(
-            backbone = args.backbone,
-            patch_size = args.patches,
-            num_feats = 1 * 4,
-            band_size = args.band_size,
-            num_classes = args.num_classes,
-            dim = args.dim,
-            depth = args.depth,
-            heads = args.head,
-            mlp_dim = 8,
-            dropout = 0.1,
-            emb_dropout = 0.1,
-        )
-    elif args.network =='sst':
-        model = SSTViT(
-            image_size=args.patches,
-            near_band=1,
-            num_patches=args.band_size,
-            num_classes=2,
-            dim=32,
-            depth=2,
-            heads=4,
-            dim_head=16,
-            mlp_dim=8,
-            b_dim=512,
-            b_depth=3,
-            b_heads=8,
-            b_dim_head=32,
-            b_mlp_head=8,
-            dropout=0.2,
-            emb_dropout=0.1,
-        )
-    model = model.to(device)
-    # criterion
-    criterion = nn.CrossEntropyLoss().cuda()
-    # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr = args.learning_rate, weight_decay = args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = args.epoches // 10, gamma = args.gamma)
-    # -------------------------------------------------------------------------------
-    if args.flag_test == 'test':
-        model.load_state_dict(torch.load(f'./output/{args.network}_{args.dataset}_round{search_num}_bestparameter.pth'))
+
+    model.apply(initNetParams)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=0.001)
+    cudnn.benchmark = True
+    model.cuda()
+    print('trainging begins----------------------------')
+    loss_fuc = torch.nn.CrossEntropyLoss()
+    torch.cuda.empty_cache()
+    train_loss_list = []
+    t0=time.time()
+    for epoch in range(args.epochs):  # args.epochs
+        model.train()
+        adjust_learning_rate(optimizer, args.lr, epoch, args.epochs)
+        loss_epoch = 0
+        for step, (data1_, data2_, idx_, binary_label_) in enumerate(train_Loader):
+            idx_true = torch.nonzero(idx_.squeeze()>-1, as_tuple=False).squeeze()
+            idx_ = idx_.squeeze()[idx_true]
+            binary_label_ = binary_label_.squeeze()[idx_true]
+            l = model(data1_.contiguous(), data2_.contiguous(), idx_, binary_label_, loss_fuc)
+            optimizer.zero_grad()
+            l.backward()
+            optimizer.step()
+            loss_epoch += l.item()
+        print('epoch %d' % (epoch + 1))
+        l = loss_epoch/args.data_split_num
+        train_loss_list.append(l)
+        if epoch % 30 == 0:
+            print('epoch %d, Loss: %.6f' % (epoch + 1, l))
+        del l
+    del train_Loader, data1_, data2_, idx_, binary_label_
+    t1 = time.time()
+    time_epoch = (t1 - t0) / args.epochs
+    print(args.Dataset)
+    print('time of train:', time_epoch)
+
+
+    t0 = time.time()
+    with torch.no_grad():
         model.eval()
-        # tar_v, pre_v = valid_epoch(model, val_loader, criterion, device)
-        # OA2, AA_mean2, Kappa2, AA2 = output_metric(tar_v, pre_v)
+        result1, result2 = model(data1, data2, [], [], [])
+        print('------val (result1)')
+        if args.data_split_num>1:
+            result1 = torch.transpose(result1, 1, 0)  # num_class, num_split, H,W
+            result1 = recover_split_img(result1)  # [num_class,H,W]
+        result1 = result1.reshape([2, -1])  # [2, H*W]
+        result1 = np.array(result1.cpu().argmax(axis=0).long())
+        bmap1 = result1.reshape([args.H, args.W])
+        oa_kappa1 = access(args, gt, bmap1)
+        print('------val (result2)')
+        if args.data_split_num > 1:
+            result2 = torch.transpose(result2, 1, 0)  # num_class, num_split, H,W
+            result2 = recover_split_img(result2)  # [num_class,H,W]
+        result2 = result2.reshape([2, -1])  # [2, H*W]
+        result2 = np.array(result2.cpu().argmax(axis=0).long())
+        bmap2 = result2.reshape([args.H, args.W])
+        oa_kappa2 = access(args, gt, bmap2)
+        print('------------')
+    t1 = time.time()
+    time_epoch = t1 - t0
+    print(args.Dataset)
+    print('time of test: ', time_epoch)
+    return bmap1, oa_kappa1
 
-        all_set = MyDataset(all_x, all_y)
-        all_loader = DataLoader(all_set, batch_size = args.batch_size,
-                                num_workers = args.num_workers, pin_memory = True, shuffle = False)
-        img_size = {'China': [420, 140], 'USA': [307, 241], 'Yellow River': [463, 241], 'Bay_Area': [600, 500],'Farmland':[420,140]}
-        height, width = img_size[args.dataset]
-        # output classification maps
-        tic = time.time()
-        pre_u = test_epoch(args.network,model, all_loader, device)
-        toc = time.time()
-        print("Inference Time: {:.2f}".format(toc - tic))
+def repeat_runs(num_run, Dataset_name, Dataset_path, save_path):
 
-        OA2, AA_mean2, Kappa2, AA2 = output_metric(all_y[labeled_index], pre_u[labeled_index])
-        if args.dataset == 'Bay_Area':
-            pre_u[np.argwhere(all_y == 2)] = 0.5
-        prediction_matrix = np.reshape(pre_u, (height, width))
-        plt.imshow(prediction_matrix, 'gray')
-        plt.axis('off')
-        plt.savefig(f'{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_result.jpg', bbox_inches = 'tight', pad_inches = -0.1)
-        plt.show()
-        sio.savemat(f'{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_result.mat', {'CM': prediction_matrix})
+    repeat_BMP1, repeat_OA_KAPPA1= [], []
+    oa, kappa, f1,recall,precision =0,0,0,0,0
+    seed = np.arange(num_run)
+    for i in np.arange(num_run):
+        seed_i = seed[i]
+        setup_seed(seed_i)
+        args = get_args(seed_i, Dataset_name,Dataset_path)
+        bmap1, oa_kappa1 = train(args)
+        repeat_BMP1.append(bmap1)
+        repeat_OA_KAPPA1.append(oa_kappa1)
 
-        print("Final result:")
-        print("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(OA2, AA_mean2, Kappa2))
-        print("**************************************************")
-        print("Parameter:")
+        oa = oa + repeat_OA_KAPPA1[i][1]
+        kappa = kappa + repeat_OA_KAPPA1[i][3]
+        f1 = f1 + repeat_OA_KAPPA1[i][5]
+        recall = recall + repeat_OA_KAPPA1[i][7]
+        precision = precision + repeat_OA_KAPPA1[i][9]
+    avg_oa_kappa1 = get_avg_oa_kappa(oa, kappa, f1, recall, precision, seed)
+    repeat_BMP1= np.array(repeat_BMP1)
+    repeat_OA_KAPPA1 = np.array(repeat_OA_KAPPA1)
 
-        return OA2, AA_mean2, Kappa2
-    elif args.flag_test == 'train':
-        print("start training")
-        total_time = 0
-        best = -1
-        best_state_dict = None
-        for epoch in range(args.epoches):
-            # train model
-            model.train()
-            tic = time.time()
-            train_acc, train_obj, tar_t, pre_t = train_epoch(args.network, model, train_loader, criterion, optimizer, device)
-            scheduler.step()
-            toc = time.time()
-            total_time += (toc - tic)
-            OA1, AA_mean1, Kappa1, AA1 = output_metric(tar_t, pre_t)
-            print("{:02d}-Epoch: {:03d} train_loss: {:.4f} train_acc: {:.4f}"
-                  .format(search_num, epoch + 1, train_obj, train_acc))
-
-            # 验证集
-            if (epoch + 1) % args.test_freq == 0:
-                model.eval()
-                tar_v, pre_v = valid_epoch(args.network, model, val_loader, criterion, device)
-                OA2, AA_mean2, Kappa2, AA2 = output_metric(tar_v, pre_v)
-                if OA2 > best:
-                    best = OA2
-                    acc, aa, kappa = OA2, AA_mean2, Kappa2
-                    best_state_dict = model.state_dict()
-                print('Best Acc: {:.4f}'.format(best))
-            # 保存模型
-            if (epoch + 1) % args.save_epoch == 0 and best_state_dict is not None:
-                if not os.path.exists(args.out_dir):
-                    os.mkdir(args.out_dir)
-                save_path = f"{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_bestparameter.pth"
-                torch.save(best_state_dict, save_path)
-                print('best model saved: {:.4f}'.format(best))
+    result_file = save_path + '/' + Dataset_name + args.model_name +'_runs'+ str(num_run)+'_result.mat'
+    print(result_file)
+    sio.savemat(result_file, {'repeat_bmap':repeat_BMP1, 'repeat_oa_kappa': repeat_OA_KAPPA1})
 
 
-        print("Running Time: {:.2f}".format(total_time))
-        print("**************************************************")
-
-        print("Final result:")
-        print("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(acc, aa, kappa))
-        print("**************************************************")
-        print("Parameter:")
-
-        return acc, aa, kappa
-
-
-def print_args(args):
-    for k, v in zip(args.keys(), args.values()):
-        print("{0}: {1}".format(k, v))
+    filename = save_path + '/' + Dataset_name + args.model_name +'_runs'+ str(num_run) + '_oa_kappa.txt'
+    print(filename)
+    write2txt(filename, args, repeat_OA_KAPPA1, avg_oa_kappa1)
+    print('Dataset_name: ', Dataset_name)
+    print('num_runs: ', num_run)
+    print('------------------Average results-----------------')
+    print('OA:  ' + str(oa) + '    ' + 'kappa:  ' + str(kappa))
+    print('F1=   ' + str(f1))
+    print('recall=   ' + str(recall))
+    print('precision=   ' + str(precision))
 
 
-def get_args_parser():
-    parser = argparse.ArgumentParser("HSI")
-    parser.add_argument('--network', choices=['sahcd', 'sst', 'globalmind'], default='sahcd', help='dataset to use')
-    parser.add_argument('--dataset', choices = ['China', 'USA','Farmland'], default = 'Farmland', help = 'dataset to use')
-    parser.add_argument('--flag_test', choices = ['test', 'train'], default = 'train', help = 'testing mark')
-    parser.add_argument('--device', default = 'cuda:0', help = 'device')
-    parser.add_argument('--seed', type = int, default = 0, help = 'number of seed')
-    parser.add_argument('--batch_size', type = int, default = 64, help = 'number of batch size')
-    parser.add_argument('--test_freq', type = int, default = 5, help = 'number of evaluation')
-    parser.add_argument('--patches', type = int, default = 7, help = 'number of patches')
-    parser.add_argument('--epoches', type = int, default = 50, help = 'epoch number')
-    parser.add_argument('--learning_rate', type = float, default = 5e-4, help = 'learning rate')
-    parser.add_argument('--gamma', type = float, default = 0.9, help = 'gamma')
-    parser.add_argument('--weight_decay', type = float, default = 0, help = 'weight_decay')
 
-    parser.add_argument('--backbone', default = 'mamba', help = 'backbone of network')
-    parser.add_argument('--ratio', type = float, default = 0.05, help = 'train ratio')
-    parser.add_argument('--num_workers', default = 0, type = int)
-    parser.add_argument('--band_size', default = 154, type = int)
-    parser.add_argument('--num_classes', default = 2, type = int)  # China: 2\4, USA: 7
-    parser.add_argument('--depth', default = 5, type = int, help = 'depth of transformer')
-    parser.add_argument('--head', default = 4, type = int, help = 'number of transformer head')
-    parser.add_argument('--dim', type = int, default = 128, help = 'feature dimension')
-    parser.add_argument('--out_dir', default = './output', help = 'path where to save')
-    parser.add_argument('--logout_dir', default='./log_output', help='path where to save')
-    parser.add_argument('--save_epoch', type = int, default = 50, help = 'epoch number to save model')
-    args = parser.parse_args()
+if __name__=='__main__':
+    # please download the hyperspectral change detection datasets, and set the "Dataset_path"
 
-    return args
-
-
-def grid_search(args, num):
-    param_grid = {
-        'patches': [3],
-        'depth': [2],  # 1, 2, 3, 4
-        'head': [1],  # 1, 2, 4, 8
-        'seed': [2030, 2031, 2032, 2033, 2034, 2035],  # 2030, 2031,
-        'ratio': [0.05]  # 0.01, 0.03, 0.05, 0.10, 0.20
-    }
-    parameters = list(ParameterGrid(param_grid))[num]
-
-    args.patches = parameters['patches']
-    args.depth = parameters['depth']
-    args.head = parameters['head']
-    args.seed = parameters['seed']
-    args.ratio = parameters['ratio']
-
-    return args, parameters
-
-
-if __name__ == '__main__':
-    args = get_args_parser()
-    set_seed(seed = args.seed)
-    results = []  # 保存训练结果
-    max_search = 3
-    for i in range(0, max_search):
-        args, searched_params = grid_search(args, i)
-        i += 1
-        print(f'Start {i}-th random search')
-        print(searched_params)
-        Acc, AA, Kappa = main(args, search_num = i)
-        searched_params['search_num'] = i
-        values = list(searched_params.values())
-        values.append(Acc)
-        values.append(AA)
-        values.append(Kappa)
-        results.append(values)
-
-        np.savetxt(f'{args.logout_dir}/{args.network}_{args.dataset}_{args.flag_test}.txt', np.array(results),
-                   fmt = "%i, %i, %i, %.2f, %i, %i, %.6f, %.6f, %.6f")  # %.2f,
-
-        print_args(vars(args))
+    Dataset_path = '/home/zzh/remote_data/' # the path you put the dataset
+    num_run = 1
+    save_path = os.path.dirname(os.path.abspath(__file__))+'/result/'
+    os.makedirs(save_path, exist_ok=True)
+    # Dataset_list = ['Farmland','Hermiston','River','Bay','Barbara','GF5B_BI']
+    Dataset_list = ['Farmland']
+    for Dataset_name in Dataset_list:
+        repeat_runs(num_run, Dataset_name, Dataset_path,save_path)
 

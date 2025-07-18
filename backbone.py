@@ -67,9 +67,9 @@ class TemporalSpectrumBlock(nn.Module):
 
 # 定义骨干网络
 class SAHCD(nn.Module):
-    def __init__(self, dims):
+    def __init__(self, loss_strategy, dims):
         super(SAHCD, self).__init__()
-
+        self.loss_strategy = loss_strategy
         #空间
         self.conv1 = CNNBlock(dims[0], dims[1])
         self.spatial1 = SpatialMambaBlock(hidden_dim=dims[1],drop_path=0.,attn_drop_rate=0.)
@@ -115,17 +115,36 @@ class SAHCD(nn.Module):
         f2 = self.temporalspectrumblock2(f11, f21)
         f3 = self.temporalspectrumblock3(f12, f22)
         f = torch.cat([f1, f2, f3], dim=1)  # B,C,H,W
-        out = self.CD(f)  # 2,H,W
+        out = self.CD(f).squeeze()   # 2,H,W
         return out
         # to visiualize the feature map
 
-    def forward(self, x):
-        t1, t2 = torch.split(x, int(x.shape[1] / 2), 1)
+    def cross_entropy(self, loss_fuc1, result, label, idx):
+        num, H, B = result.shape
+        result = result.reshape([num, -1])  # [2, H*W]
+        result_dx = result[:, idx]   # [2, N]
+        result_dx = result_dx.transpose(1, 0)   # [N, 2]
+        l_ce = loss_fuc1(result_dx, label.squeeze())
+        return l_ce
+
+    def forward(self, t1, t2, idx, label, loss_fuc1):
         f10, f11, f12 = self.getFeature(t1)
         f20, f21, f22 = self.getFeature(t2)
-        output1 = self.getDifference(f10, f20, f11, f21, f12, f22)
-        output2 = self.getDifference(f20, f10, f21, f11, f22, f12)
-        return output1, output2
+        if self.loss_strategy == 'single':
+            output = self.getDifference(f10, f20, f11, f21, f12, f22)
+            if self.training:
+                l_ce = self.cross_entropy(loss_fuc1, output, label, idx)
+                return l_ce
+            return output
+        elif self.loss_strategy == 'double':
+            output1 = self.getDifference(f10, f20, f11, f21, f12, f22)
+            output2 = self.getDifference(f20, f10, f21, f11, f22, f12)
+            if self.training:
+                l_ce1 = self.cross_entropy(loss_fuc1, output1, label, idx)
+                l_ce2 = self.cross_entropy(loss_fuc1, output2, label, idx)
+                return (l_ce1 + l_ce2) / 2
+            return output1, output2
+
 
 
 
