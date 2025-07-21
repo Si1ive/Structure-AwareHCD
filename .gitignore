@@ -3,6 +3,7 @@ __pycache__/
 output/
 train_index/
 *.txt
+*.mat
 
 
 

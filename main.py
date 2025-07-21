@@ -13,9 +13,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from backbone import SAHCD
-from comparison_models.mfcen.vit_pytorch import ViT
 
-from comparison_models.sst.sstvit import SSTViT
 from utils import set_seed, make_data, MyDataset, split_train_val, output_metric, \
     train_epoch, valid_epoch, test_epoch
 
@@ -62,7 +60,7 @@ def main(args, search_num):
         height, width = img_size[args.dataset]
         # output classification maps
         tic = time.time()
-        pre_u = test_epoch(args.network,model, all_loader, device)
+        pre_u = test_epoch(args,model, all_loader, device)
         toc = time.time()
         print("Inference Time: {:.2f}".format(toc - tic))
 
@@ -91,7 +89,7 @@ def main(args, search_num):
             # train model
             model.train()
             tic = time.time()
-            train_acc, train_obj, tar_t, pre_t = train_epoch(args.network, model, train_loader, criterion, optimizer, device)
+            train_acc, train_obj, tar_t, pre_t = train_epoch(args, model, train_loader, criterion, optimizer, device)
             scheduler.step()
             toc = time.time()
             total_time += (toc - tic)
@@ -102,13 +100,15 @@ def main(args, search_num):
             # 验证集
             if (epoch + 1) % args.test_freq == 0:
                 model.eval()
-                tar_v, pre_v = valid_epoch(args.network, model, val_loader, criterion, device)
+                tar_v, pre_v = valid_epoch(args, model, val_loader, criterion, device)
                 OA2, AA_mean2, Kappa2, AA2 = output_metric(tar_v, pre_v)
                 if OA2 > best:
                     best = OA2
                     acc, aa, kappa = OA2, AA_mean2, Kappa2
                     best_state_dict = model.state_dict()
-                print('Best Acc: {:.4f}'.format(best))
+                    print('Best Acc Update: {:.4f}'.format(best))
+                else:
+                    print('Best Acc: {:.4f}'.format(best))
             # 保存模型
             if (epoch + 1) % args.save_epoch == 0 and best_state_dict is not None:
                 if not os.path.exists(args.out_dir):
@@ -118,7 +118,8 @@ def main(args, search_num):
                 print('best model saved: {:.4f}'.format(best))
 
 
-        print("Running Time: {:.2f}".format(total_time))
+        print("Total Time: {:.2f}".format(total_time))
+        print("Each Epoch Train Time: {:.2f}".format(total_time/args.epoches))
         print("**************************************************")
 
         print("Final result:")
@@ -138,13 +139,13 @@ def get_args_parser():
     parser = argparse.ArgumentParser("HSI")
     parser.add_argument('--network', choices=['sahcd', 'sst', 'globalmind'], default='sahcd', help='dataset to use')
     parser.add_argument('--dataset', choices = ['China', 'USA','Farmland'], default = 'Farmland', help = 'dataset to use')
-    parser.add_argument('--flag_test', choices = ['test', 'train'], default = 'train', help = 'testing mark')
+    parser.add_argument('--flag_test', choices = ['test', 'train'], default = 'test', help = 'testing mark')
     parser.add_argument('--device', default = 'cuda:0', help = 'device')
     parser.add_argument('--seed', type = int, default = 0, help = 'number of seed')
     parser.add_argument('--batch_size', type = int, default = 64, help = 'number of batch size')
-    parser.add_argument('--test_freq', type = int, default =10, help = 'number of evaluation')
+    parser.add_argument('--test_freq', type = int, default =5, help = 'number of evaluation')
     parser.add_argument('--patches', type = int, default = 7, help = 'number of patches')
-    parser.add_argument('--epoches', type = int, default = 50, help = 'epoch number')
+    parser.add_argument('--epoches', type = int, default = 100, help = 'epoch number')
     parser.add_argument('--learning_rate', type = float, default = 5e-4, help = 'learning rate')
     parser.add_argument('--gamma', type = float, default = 0.9, help = 'gamma')
     parser.add_argument('--weight_decay', type = float, default = 0, help = 'weight_decay')
@@ -167,7 +168,7 @@ def get_args_parser():
 
 def grid_search(args, num):
     param_grid = {
-        'patches': [3],
+        'patches': [5],
         'depth': [2],  # 1, 2, 3, 4
         'head': [1],  # 1, 2, 4, 8
         'seed': [2030, 2031, 2032, 2033, 2034, 2035],  # 2030, 2031,

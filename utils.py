@@ -270,7 +270,7 @@ def output_metric(tar, pre):
 
 # -------------------------------------------------------------------------------
 # validate model
-def valid_epoch(network, model, valid_loader, criterion, device):
+def valid_epoch(args, model, valid_loader, criterion, device):
     objs = AvgrageMeter()
     top1 = AvgrageMeter()
     tar = np.array([])
@@ -279,14 +279,18 @@ def valid_epoch(network, model, valid_loader, criterion, device):
         batch_data = batch_data.to(device)
         batch_target = batch_target.to(device)
 
-        if network == 'sahcd':
-            batch_pred,_ = model(batch_data)
-            loss = criterion(batch_pred, batch_target)
+        if args.network == 'sahcd':
+            batch_pred1,batch_pred2 = model(batch_data)
+            batch_pred1 = batch_pred1[:, :, args.patches//2, args.patches//2]
+            batch_pred2 = batch_pred2[:, :, args.patches // 2, args.patches // 2]
+            loss1 = criterion(batch_pred1, batch_target)
+            loss2 = criterion(batch_pred2, batch_target)
+            loss = (loss1 + loss2) /2
         else:
-            batch_pred = model(batch_data)
-            loss = criterion(batch_pred, batch_target)
+            batch_pred1 = model(batch_data)
+            loss = criterion(batch_pred1, batch_target)
 
-        prec1, t, p = accuracy(batch_pred, batch_target, topk = (1,))
+        prec1, t, p = accuracy(batch_pred1, batch_target, topk = (1,))
         n = batch_data.shape[0]
         objs.update(loss.data, n)
         top1.update(prec1[0].data, n)
@@ -296,7 +300,7 @@ def valid_epoch(network, model, valid_loader, criterion, device):
     return tar, pre
 
 
-def test_epoch(network, model, test_loader, device):
+def test_epoch(args, model, test_loader, device):
     objs = AvgrageMeter()
     top1 = AvgrageMeter()
     tar = np.array([])
@@ -306,6 +310,7 @@ def test_epoch(network, model, test_loader, device):
         batch_target = batch_target.to(device)
 
         batch_pred,_ = model(batch_data)
+        batch_pred = batch_pred[:, :, args.patches // 2, args.patches // 2]
 
         _, pred = batch_pred.topk(1, 1, True, True)
         pp = pred.squeeze()
@@ -315,7 +320,7 @@ def test_epoch(network, model, test_loader, device):
 
 # -------------------------------------------------------------------------------
 # train model
-def train_epoch(network, model, train_loader, criterion, optimizer, device):
+def train_epoch(args, model, train_loader, criterion, optimizer, device):
     objs = AvgrageMeter()
     top1 = AvgrageMeter()
     tar = np.array([])
@@ -325,19 +330,21 @@ def train_epoch(network, model, train_loader, criterion, optimizer, device):
         batch_target = batch_target.to(device)
         optimizer.zero_grad()
 
-        if network == 'sahcd':
+        if args.network == 'sahcd':
             batch_pred1,batch_pred2 = model(batch_data)
+            batch_pred1 = batch_pred1[:, :, args.patches//2, args.patches//2]
+            batch_pred2 = batch_pred2[:, :, args.patches // 2, args.patches // 2]
             loss1 = criterion(batch_pred1, batch_target)
             loss2 = criterion(batch_pred2, batch_target)
             loss = (loss1 + loss2) /2
         else:
-            batch_pred = model(batch_data)
-            loss = criterion(batch_pred, batch_target)
+            batch_pred1 = model(batch_data)
+            loss = criterion(batch_pred1, batch_target)
 
         loss.backward()
         optimizer.step()
 
-        prec1, t, p = accuracy(batch_pred, batch_target, topk = (1,))
+        prec1, t, p = accuracy(batch_pred1, batch_target, topk = (1,))
         n = batch_data.shape[0]
         objs.update(loss.data, n)
         top1.update(prec1[0].data, n)
