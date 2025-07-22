@@ -13,14 +13,14 @@ from termcolor import colored
 
 
 @functools.lru_cache()
-def create_logger(output_dir, dist_rank=0, name=''):
+def create_logger(output_dir, dist_rank=0, name='',log_name=''):
     # create logger
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
     # create formatter
-    fmt = '[%(asctime)s %(name)s] (%(filename)s %(lineno)d): %(levelname)s %(message)s'
+    fmt = '[%(asctime)s %(name)s]: %(levelname)s %(message)s'
     color_fmt = colored('[%(asctime)s %(name)s]', 'green') + \
                 colored('(%(filename)s %(lineno)d)', 'yellow') + ': %(levelname)s %(message)s'
 
@@ -33,7 +33,7 @@ def create_logger(output_dir, dist_rank=0, name=''):
         logger.addHandler(console_handler)
 
     # create file handlers
-    file_handler = logging.FileHandler(os.path.join(output_dir, f'log_rank{dist_rank}.txt'), mode='a')
+    file_handler = logging.FileHandler(os.path.join(output_dir, f'log_{log_name}.txt'), mode='a')
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(fmt=fmt, datefmt='%Y-%m-%d %H:%M:%S'))
     logger.addHandler(file_handler)

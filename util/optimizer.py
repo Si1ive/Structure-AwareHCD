@@ -11,11 +11,11 @@ from functools import partial
 from torch import optim as optim
 
 
-def build_optimizer(config, model, logger, **kwargs):
+def build_optimizer(args, model, logger):
     """
     Build optimizer, set weight decay of normalization to 0 by default.
     """
-    logger.info(f"==============> building optimizer {config.TRAIN.OPTIMIZER.NAME}....................")
+    logger.info(f"==============> Start building optimizer")
     skip = {}
     skip_keywords = {}
     if hasattr(model, 'no_weight_decay'):
@@ -23,20 +23,16 @@ def build_optimizer(config, model, logger, **kwargs):
     if hasattr(model, 'no_weight_decay_keywords'):
         skip_keywords = model.no_weight_decay_keywords()
     parameters, no_decay_names = set_weight_decay(model, skip, skip_keywords)
-    if not kwargs.get('mute_repeat', False):
-        logger.info(f"No weight decay list: {no_decay_names}")
 
-    opt_lower = config.TRAIN.OPTIMIZER.NAME.lower()
-    optimizer = None
-    if opt_lower == 'sgd':
-        optimizer = optim.SGD(parameters, momentum=config.TRAIN.OPTIMIZER.MOMENTUM, nesterov=True,
-                              lr=config.TRAIN.BASE_LR, weight_decay=config.TRAIN.WEIGHT_DECAY)
-    elif opt_lower == 'adamw':
-        optimizer = optim.AdamW(parameters, eps=config.TRAIN.OPTIMIZER.EPS, betas=config.TRAIN.OPTIMIZER.BETAS,
-                                lr=config.TRAIN.BASE_LR, weight_decay=config.TRAIN.WEIGHT_DECAY)
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(parameters, momentum=0.9, nesterov=True,
+                              lr=args.learning_rate, weight_decay=args.weight_decay)
+    elif args.optimizer == 'adamw':
+        optimizer = optim.AdamW(parameters, eps=1e-8, betas=(0.9, 0.999),
+                                lr=args.learning_rate, weight_decay=args.weight_decay)
     else:
         raise NotImplementedError
-
+    logger.info(f"==============> Finish building optimizer")
     return optimizer
 
 

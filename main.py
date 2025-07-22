@@ -16,13 +16,19 @@ from backbone import SAHCD
 
 from utils import set_seed, make_data, MyDataset, split_train_val, output_metric, \
     train_epoch, valid_epoch, test_epoch
+from util.logger import create_logger
+from util.lr_scheduler import build_scheduler
+from util.optimizer import build_optimizer
 
 
 def main(args, search_num):
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    print(f"[Info]: Use {device} now!")
+    logger.info(f"Use {device} now!")
+    # -------------------------------------------------------------------------------
+    logger.info(f"==============> Start loading data!")
 
-    all_x, all_y, labeled_index = make_data(args, patch_size = args.patches)
+    #create data
+    all_x, all_y, labeled_index = make_data(args,logger, patch_size = args.patches)
     # 创建训练数据集 & 验证数据集
     labeled_x, labeled_y = all_x[labeled_index].squeeze(), all_y[labeled_index].squeeze()
     train_x_set, train_y_set, val_x_set, val_y_set = split_train_val(labeled_x, labeled_y, args)
@@ -33,7 +39,7 @@ def main(args, search_num):
     val_set = MyDataset(val_x_set, val_y_set)
     val_loader = DataLoader(val_set, batch_size = args.batch_size,
                             num_workers = args.num_workers, pin_memory = True, shuffle = True)
-    print(f"[Info]: Finish loading data!", flush = True)
+    logger.info(f"==============> Finish loading data!")
     # -------------------------------------------------------------------------------
     # create model
     if args.network =='sahcd':
@@ -41,13 +47,17 @@ def main(args, search_num):
             dims=[args.data_shape[0],128,128,128]
         )
     model = model.to(device)
+    # -------------------------------------------------------------------------------
     # criterion
     criterion = nn.CrossEntropyLoss().cuda()
     # optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr = args.learning_rate, weight_decay = args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = args.epoches // 10, gamma = args.gamma)
+    optimizer = build_optimizer(args, model, logger)
+    # scheduler
+    #scheduler = build_scheduler(args, optimizer, args.epoches * np.ceil(len(train_set) / args.batch_size)) #步数与epoch数的关系 total_steps = epoch * ceil(样本/Batch_size)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.epoches // 10, gamma=args.gamma)
     # -------------------------------------------------------------------------------
     if args.flag_test == 'test':
+        logger.info("==============> Start Inference!")
         model.load_state_dict(torch.load(f'./output/{args.network}_{args.dataset}_round{search_num}_bestparameter.pth'))
         model.eval()
         # tar_v, pre_v = valid_epoch(model, val_loader, criterion, device)
@@ -62,7 +72,7 @@ def main(args, search_num):
         tic = time.time()
         pre_u = test_epoch(args,model, all_loader, device)
         toc = time.time()
-        print("Inference Time: {:.2f}".format(toc - tic))
+        logger.info("Inference Time: {:.2f}".format(toc - tic))
 
         OA2, AA_mean2, Kappa2, AA2 = output_metric(all_y[labeled_index], pre_u[labeled_index])
         if args.dataset == 'Bay_Area':
@@ -74,14 +84,14 @@ def main(args, search_num):
         plt.show()
         sio.savemat(f'{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_result.mat', {'CM': prediction_matrix})
 
-        print("Final result:")
-        print("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(OA2, AA_mean2, Kappa2))
-        print("**************************************************")
-        print("Parameter:")
-
+        logger.info("Final result:")
+        logger.info("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(OA2, AA_mean2, Kappa2))
+        logger.info("**************************************************")
+        logger.info("Parameter:")
         return OA2, AA_mean2, Kappa2
+        logger.info("==============> Finish training!")
     elif args.flag_test == 'train':
-        print("start training")
+        logger.info("==============> start training!")
         total_time = 0
         best = -1
         best_state_dict = None
@@ -94,7 +104,7 @@ def main(args, search_num):
             toc = time.time()
             total_time += (toc - tic)
             OA1, AA_mean1, Kappa1, AA1 = output_metric(tar_t, pre_t)
-            print("{:02d}-Epoch: {:03d} train_loss: {:.4f} train_acc: {:.4f}"
+            logger.info("{:02d}-Epoch: {:03d} train_loss: {:.4f} train_acc: {:.4f}"
                   .format(search_num, epoch + 1, train_obj, train_acc))
 
             # 验证集
@@ -106,63 +116,73 @@ def main(args, search_num):
                     best = OA2
                     acc, aa, kappa = OA2, AA_mean2, Kappa2
                     best_state_dict = model.state_dict()
-                    print('Best Acc Update: {:.4f}'.format(best))
+                    logger.info('Best Acc Update: {:.4f}'.format(best))
                 else:
-                    print('Best Acc: {:.4f}'.format(best))
+                    logger.info('Best Acc: {:.4f}'.format(best))
             # 保存模型
             if (epoch + 1) % args.save_epoch == 0 and best_state_dict is not None:
                 if not os.path.exists(args.out_dir):
                     os.mkdir(args.out_dir)
                 save_path = f"{args.out_dir}/{args.network}_{args.dataset}_round{search_num}_bestparameter.pth"
                 torch.save(best_state_dict, save_path)
-                print('best model saved: {:.4f}'.format(best))
+                logger.info('best model saved: {:.4f}'.format(best))
 
 
-        print("Total Time: {:.2f}".format(total_time))
-        print("Each Epoch Train Time: {:.2f}".format(total_time/args.epoches))
-        print("**************************************************")
+        logger.info("Total Time: {:.2f}".format(total_time))
+        logger.info("Each Epoch Train Time: {:.2f}".format(total_time/args.epoches))
+        logger.info("**************************************************")
 
-        print("Final result:")
-        print("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(acc, aa, kappa))
-        print("**************************************************")
-        print("Parameter:")
-
+        logger.info("Final result:")
+        logger.info("OA: {:.4f} | AA: {:.4f} | Kappa: {:.4f}".format(acc, aa, kappa))
+        logger.info("**************************************************")
+        logger.info("Parameter:")
+        logger.info("==============> Finish training!")
         return acc, aa, kappa
 
 
 def print_args(args):
     for k, v in zip(args.keys(), args.values()):
-        print("{0}: {1}".format(k, v))
+        logger.info("{0}: {1}".format(k, v))
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser("HSI")
     parser.add_argument('--network', choices=['sahcd', 'sst', 'globalmind'], default='sahcd', help='dataset to use')
-    parser.add_argument('--dataset', choices = ['China', 'USA','Farmland'], default = 'Farmland', help = 'dataset to use')
-    parser.add_argument('--flag_test', choices = ['test', 'train'], default = 'test', help = 'testing mark')
     parser.add_argument('--device', default = 'cuda:0', help = 'device')
     parser.add_argument('--seed', type = int, default = 0, help = 'number of seed')
-    parser.add_argument('--batch_size', type = int, default = 64, help = 'number of batch size')
-    parser.add_argument('--test_freq', type = int, default =5, help = 'number of evaluation')
-    parser.add_argument('--patches', type = int, default = 7, help = 'number of patches')
-    parser.add_argument('--epoches', type = int, default = 100, help = 'epoch number')
-    parser.add_argument('--learning_rate', type = float, default = 5e-4, help = 'learning rate')
-    parser.add_argument('--gamma', type = float, default = 0.9, help = 'gamma')
-    parser.add_argument('--weight_decay', type = float, default = 0, help = 'weight_decay')
-
     parser.add_argument('--backbone', default = 'mamba', help = 'backbone of network')
-    parser.add_argument('--ratio', type = float, default = 0.05, help = 'train ratio')
-    parser.add_argument('--num_workers', default = 0, type = int)
-    parser.add_argument('--band_size', default = 154, type = int)
     parser.add_argument('--num_classes', default = 2, type = int)  # China: 2\4, USA: 7
     parser.add_argument('--depth', default = 5, type = int, help = 'depth of transformer')
     parser.add_argument('--head', default = 4, type = int, help = 'number of transformer head')
     parser.add_argument('--dim', type = int, default = 128, help = 'feature dimension')
     parser.add_argument('--out_dir', default = './output', help = 'path where to save')
-    parser.add_argument('--logout_dir', default='./log_output', help='path where to save')
-    parser.add_argument('--save_epoch', type = int, default = 50, help = 'epoch number to save model')
-    args = parser.parse_args()
 
+    #log
+    parser.add_argument('--log_name', default='demo', help='')
+    parser.add_argument('--logout_dir', default='./log_output', help='path where to save')
+    #dataset
+    parser.add_argument('--dataset', choices=['China', 'USA', 'Farmland'], default='Farmland', help='dataset to use')
+    parser.add_argument('--batch_size', type=int, default=64, help='number of batch size')
+    parser.add_argument('--patches', type=int, default=7, help='number of patches')
+    parser.add_argument('--num_workers', default = 0, type = int)
+    parser.add_argument('--band_size', default = 154, type = int)
+    parser.add_argument('--ratio', type=float, default=0.05, help='train ratio')
+    #train
+    parser.add_argument('--flag_test', choices=['test', 'train'], default='train', help='testing mark')
+    parser.add_argument('--test_freq', type = int, default =5, help = 'number of evaluation')
+    parser.add_argument('--epoches', type=int, default=100, help='epoch number')
+    parser.add_argument('--save_epoch', type = int, default = 50, help = 'epoch number to save model')
+    #optimizer
+    parser.add_argument('--optimizer', choices = ['sgd', 'adamw'], default='adamw', help='optimizer')
+    parser.add_argument('--learning_rate', type=float, default=5e-4, help='learning rate')
+    parser.add_argument('--weight_decay', type=float, default=0, help='weight_decay')
+    #scheduler 训练epoch短，不适合基于指标，选择scheduler
+    parser.add_argument('--scheduler', choices = ['cosine', 'linear','step','multistep'], default='multistep',help='scheduler')
+    parser.add_argument('--warmup_lr', type=float, default=5e-5, help='learning rate of warmup')
+    parser.add_argument('--warmup_step_rate', type=float, default=0.15, help='epoch of warmup')
+    parser.add_argument('--decay_step_rates', type=list, default=[0.6,0.8,0.9], help='decay_rate')
+    parser.add_argument('--gamma', type=float, default=0.9, help='')
+    args = parser.parse_args()
     return args
 
 
@@ -187,14 +207,16 @@ def grid_search(args, num):
 
 if __name__ == '__main__':
     args = get_args_parser()
+    os.makedirs(args.logout_dir, exist_ok=True)
+    logger = create_logger(output_dir=args.logout_dir, name=f"{args.network}", log_name=args.log_name)
     set_seed(seed = args.seed)
     results = []  # 保存训练结果
     max_search = 3
     for i in range(0, max_search):
         args, searched_params = grid_search(args, i)
         i += 1
-        print(f'Start {i}-th random search')
-        print(searched_params)
+        logger.info(f'Start {i}-th random search')
+        logger.info(searched_params)
         Acc, AA, Kappa = main(args, search_num = i)
         searched_params['search_num'] = i
         values = list(searched_params.values())
@@ -206,5 +228,6 @@ if __name__ == '__main__':
         np.savetxt(f'{args.logout_dir}/{args.network}_{args.dataset}_{args.flag_test}.txt', np.array(results),
                    fmt = "%i, %i, %i, %.2f, %i, %i, %.6f, %.6f, %.6f")  # %.2f,
 
-        print_args(vars(args))
+        logger.info(vars(args))
+    logger.info("\n\n")
 

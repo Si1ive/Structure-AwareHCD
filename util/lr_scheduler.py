@@ -17,49 +17,51 @@ if timm.__version__ != "0.4.12":
     from .cosine_lr import CosineLRScheduler 
 
 
-def build_scheduler(config, optimizer, n_iter_per_epoch):
-    num_steps = int(config.TRAIN.EPOCHS * n_iter_per_epoch)
-    warmup_steps = int(config.TRAIN.WARMUP_EPOCHS * n_iter_per_epoch)
-    decay_steps = int(config.TRAIN.LR_SCHEDULER.DECAY_EPOCHS * n_iter_per_epoch)
-    multi_steps = [i * n_iter_per_epoch for i in config.TRAIN.LR_SCHEDULER.MULTISTEPS]
+def build_scheduler(args, optimizer,total_steps):
+    warmup_steps = max(800, int(args.warmup_step_rate * total_steps))
+    decay_steps = [
+        int(args.decay_step_rates[0] * total_steps),
+        int(args.decay_step_rates[1] * total_steps),
+        int(args.decay_step_rates[2] * total_steps)
+    ]
 
     lr_scheduler = None
-    if config.TRAIN.LR_SCHEDULER.NAME == 'cosine':
+    if args.scheduler == 'cosine':
         lr_scheduler = CosineLRScheduler(
             optimizer,
-            t_initial=(num_steps - warmup_steps) if config.TRAIN.LR_SCHEDULER.WARMUP_PREFIX else num_steps,
+            t_initial=(total_steps - warmup_steps) if True else total_steps,
             t_mul=1.,
-            lr_min=config.TRAIN.MIN_LR,
-            warmup_lr_init=config.TRAIN.WARMUP_LR,
+            lr_min=args.TRAIN.MIN_LR,
+            warmup_lr_init=args.warmup_lr,
             warmup_t=warmup_steps,
             cycle_limit=1,
             t_in_epochs=False,
-            warmup_prefix=config.TRAIN.LR_SCHEDULER.WARMUP_PREFIX,
+            warmup_prefix=True,
         )
-    elif config.TRAIN.LR_SCHEDULER.NAME == 'linear':
+    elif args.scheduler == 'linear':
         lr_scheduler = LinearLRScheduler(
             optimizer,
-            t_initial=num_steps,
+            t_initial=total_steps,
             lr_min_rate=0.01,
-            warmup_lr_init=config.TRAIN.WARMUP_LR,
+            warmup_lr_init=args.warmup_lr,
             warmup_t=warmup_steps,
             t_in_epochs=False,
         )
-    elif config.TRAIN.LR_SCHEDULER.NAME == 'step':
+    elif args.scheduler == 'step':
         lr_scheduler = StepLRScheduler(
             optimizer,
-            decay_t=decay_steps,
-            decay_rate=config.TRAIN.LR_SCHEDULER.DECAY_RATE,
-            warmup_lr_init=config.TRAIN.WARMUP_LR,
+            milestones=decay_steps,
+            decay_rate=args.decay_rates,
+            warmup_lr_init=args.warmup_lr,
             warmup_t=warmup_steps,
             t_in_epochs=False,
         )
-    elif config.TRAIN.LR_SCHEDULER.NAME == 'multistep':
+    elif args.scheduler == 'multistep':
         lr_scheduler = MultiStepLRScheduler(
             optimizer,
-            milestones=multi_steps,
-            gamma=config.TRAIN.LR_SCHEDULER.GAMMA,
-            warmup_lr_init=config.TRAIN.WARMUP_LR,
+            milestones=decay_steps,
+            gamma=args.gamma,
+            warmup_lr_init=args.warmup_lr,
             warmup_t=warmup_steps,
             t_in_epochs=False,
         )

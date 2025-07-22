@@ -27,7 +27,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 # 边界拓展：镜像
-def mirror_hsi(height, width, band, input_normalize, patch = 5):
+def mirror_hsi(logger,height, width, band, input_normalize, patch = 5):
     padding = patch // 2
     mirror_hsi = np.zeros((height + 2 * padding, width + 2 * padding, band)).astype(np.float16)
     # 中心区域
@@ -45,10 +45,10 @@ def mirror_hsi(height, width, band, input_normalize, patch = 5):
     for i in range(padding):
         mirror_hsi[height + padding + i, :, :] = mirror_hsi[height + padding - 1 - i, :, :]
 
-    print("**************************************************")
-    print("patch is : {}".format(patch))
-    print("mirror_image shape : [{0},{1},{2}]".format(mirror_hsi.shape[0], mirror_hsi.shape[1], mirror_hsi.shape[2]))
-    print("**************************************************")
+    logger.info("**************************************************")
+    logger.info("patch is : {}".format(patch))
+    logger.info("mirror_image shape : [{0},{1},{2}]".format(mirror_hsi.shape[0], mirror_hsi.shape[1], mirror_hsi.shape[2]))
+    logger.info("**************************************************")
     return mirror_hsi
 
 
@@ -66,15 +66,14 @@ def get_patches(data, img_height, img_width, channel, patch_size):
     # patches = (img_height * img_width, patch_size, patch_size, band_size)
     return patches
 
-
-def make_data(args, patch_size = 5, n_class = 2):
+def make_data(args,logger, patch_size = 5, n_class = 2):
     """读取数据——>将数据整理为B×b×N格式——>标准化——>"""
     global path, data_t1, data_t2, y
     if platform.system().lower() == 'windows':
-        print("[Info]: Use Windows!")
+        logger.info("[Info]: Use Windows!")
         path = 'E:'
     elif platform.system().lower() == 'linux':
-        print("[Info]: Use Linux!")
+        logger.info("[Info]: Use Linux!")
         path = '/home/zzh/remote_data'
     if args.dataset == 'China':
         data = sio.loadmat(path + '/DataSet/China&USA/China_Change_Dataset.mat')  # data set X
@@ -126,8 +125,8 @@ def make_data(args, patch_size = 5, n_class = 2):
 
     # get patches
     # [img_height * img_width, patch_size, patch_size, band_size]
-    mirror_t1 = mirror_hsi(img_height, img_width, channel, data_t1_normalize, patch_size)
-    mirror_t2 = mirror_hsi(img_height, img_width, channel, data_t2_normalize, patch_size)
+    mirror_t1 = mirror_hsi(logger,img_height, img_width, channel, data_t1_normalize, patch_size)
+    mirror_t2 = mirror_hsi(logger,img_height, img_width, channel, data_t2_normalize, patch_size)
     patches_t1 = get_patches(mirror_t1, img_height, img_width, channel, patch_size).astype(np.float16)
     patches_t2 = get_patches(mirror_t2, img_height, img_width, channel, patch_size).astype(np.float16)
 
@@ -196,7 +195,7 @@ def split_train_val(x, y3, args):
 
 
 def get_train_index(data, data_train):
-    print('Start get train index!')
+    logger.info('Start get train index!')
     train_index = []
     pbar = tqdm(total = len(data_train), ncols = 0, desc = f"Processing", unit = "step")
     for i in range(len(data_train)):
